@@ -1,8 +1,8 @@
 import sys
 import os
 import re
+import yaml
 
-# Afegim la ruta absoluta del subdirectori 'src' al sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(BASE_DIR, 'src')
 if SRC_DIR not in sys.path:
@@ -12,95 +12,52 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QTableWidget, QTableWidgetItem, QFileDialog, 
     QHeaderView, QComboBox, QAbstractItemView, QCheckBox, QGroupBox,
-    QMessageBox
+    QMessageBox, QColorDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
-# Importem EmissorWeb directament des del directori src
 try:
     from emissor import EmissorWeb
 except ImportError as e:
+    EmissorWeb = None
     print(f"⚠️ Alerta: No s'ha pogut importar EmissorWeb des de {SRC_DIR}: {e}")
-    
 
+try:
+    from projector import WindowProjector
+    from utils import ms_to_time_str, srt_time_to_ms
+except ImportError as e:
+    print(f"⚠️ Error en importar mòduls compartits des de src/: {e}")
+    WindowProjector = None
+    ms_to_time_str = None
+    srt_time_to_ms = None
 
-CONFIG_SERVER = {
-    'host': '0.0.0.0',
-    'port': 5000,
-    'channels': []
-}
+# --- CÀRREGA DE CONFIGURACIÓ UNIFICADA ---
+CONFIG_PATH = os.path.join(BASE_DIR, 'configTelo.yaml')
 
-IDIOMES_MAP = {
-    'FRA': 'Français',
-    'CAT': 'Català',
-    'SPA': 'Español',
-    'ENG': 'English',
-    'ITA': 'Italiano',
-    'GER': 'Deutsch',
-    'UNI': 'Monolingüe'
-}
+def carregar_configuracio():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            print(f"⚠️ Error carregant {CONFIG_PATH}: {e}")
+    return {}
 
-def srt_time_to_ms(time_str):
-    """Converteix el temps del format SRT (00:01:28,998) a mil·lissegons"""
-    try:
-        time_str = time_str.replace(',', '.')
-        parts = time_str.split(':')
-        hours = int(parts[0])
-        minutes = int(parts[1])
-        sec_parts = parts[2].split('.')
-        seconds = int(sec_parts[0])
-        ms = int(sec_parts[1])
-        return (hours * 3600 + minutes * 60 + seconds) * 1000 + ms
-    except Exception:
-        return 0
+CONFIG_FULL = carregar_configuracio()
+CONFIG_COMMON = CONFIG_FULL.get('common', {})
+CONFIG_MANUAL = CONFIG_FULL.get('manual', {})
+STYLES_CFG = CONFIG_COMMON.get('styles', {})
 
-def ms_to_time_str(ms):
-    """Converteix mil·lissegons a format llegible mm:ss o -mm:ss"""
-    sign = ""
-    if ms < 0:
-        sign = "-"
-        ms = abs(ms)
-    
-    seconds = int(ms // 1000)
-    minutes = int(seconds // 60)
-    hours = int(minutes // 60)
-    
-    sec_rem = seconds % 60
-    min_rem = minutes % 60
-    
-    if hours > 0:
-        return f"{sign}{hours:02d}:{min_rem:02d}:{sec_rem:02d}"
-    else:
-        return f"{sign}{min_rem:02d}:{sec_rem:02d}"
+CONFIG_SERVER = CONFIG_COMMON.get('server', {'host': '0.0.0.0', 'port': 5000})
+IDIOMES_CONFIG = [{'id': k.upper(), 'label': v} for k, v in CONFIG_COMMON.get('languages', {}).items()]
 
+ESTILS_CONFIG = CONFIG_COMMON.get('interface', {})
+ESTILS_CONFIG['projector_hdmi'] = STYLES_CFG.get('hdmi', {})
+ESTILS_CONFIG['subtitols_previsualitzacio'] = CONFIG_MANUAL.get('subtitols_previsualitzacio', {})
 
-# --- FINESTRA AUXILIAR PROJECTOR HDMI ---
-class WindowProjector(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("TELÓ - Projector HDMI")
-        self.setStyleSheet("background-color: black;")
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 40, 40, 40)
-
-        self.lbl_text = QLabel("")
-        self.lbl_text.setFont(QFont("Arial", 38, QFont.Weight.Bold))
-        self.lbl_text.setStyleSheet("color: white;")
-        self.lbl_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_text.setWordWrap(True)
-
-        layout.addWidget(self.lbl_text)
-
-    def actualitzar_text(self, text):
-        self.lbl_text.setText(text)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape:
-            self.showNormal()
-        else:
-            super().keyPressEvent(event)
+IDIOMES_MAP = {item['id']: item['label'] for item in IDIOMES_CONFIG}
+IDIOMES_ORDRE = [item['id'] for item in IDIOMES_CONFIG]
 
 
 # --- FINESTRA PRINCIPAL DE CONTROL ---
@@ -113,9 +70,8 @@ class TeloManualPyQt(QMainWindow):
         self.detected_langs = []
         self.proj_checkboxes = {}
 
-        # --- TIMER I COMPTADORS ---
         self.timer = QTimer(self)
-        self.timer.setInterval(100)  # S'actualitza cada 100ms
+        self.timer.setInterval(100)
         self.timer.timeout.connect(self.update_timers)
 
         self.session_started = False
@@ -123,56 +79,63 @@ class TeloManualPyQt(QMainWindow):
         self.total_elapsed_ms = 0
         self.sub_elapsed_ms = 0
 
-        self.projector_window = WindowProjector()
+        self.projector_cfg = STYLES_CFG.get('hdmi', {})
+        self.projector_window = WindowProjector(app_title="TELÓ", config_proj=self.projector_cfg)
 
         self.init_ui()
         self.detectar_segona_pantalla()
 
     def init_ui(self):
         self.setWindowTitle("TELÓ 🎭 - Control Manual Multilingüe")
-        self.resize(1150, 820)
+        self.resize(1150, 920)
         
-        # POLIMENT DE L'ESTIL CSS GLOBAL (QSS)
-        self.setStyleSheet("""
-            QMainWindow { background-color: #121212; }
-            QWidget { background-color: #121212; color: #E0E0E0; font-family: 'Segoe UI', Arial; font-size: 10pt; }
+        cfg_ui = ESTILS_CONFIG.get('interface', {})
+        font_family = cfg_ui.get('font_family', 'Arial, Helvetica')
+        font_size = cfg_ui.get('font_size', 10)
+        color_text = cfg_ui.get('colors', {}).get('text', '#E0E0E0')
+        color_fons = cfg_ui.get('colors', {}).get('background', '#121212')
+        color_destacat = cfg_ui.get('colors', {}).get('primary', '#00E676')
+
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: {color_fons}; }}
+            QWidget {{ background-color: {color_fons}; color: {color_text}; font-family: {font_family}; font-size: {font_size}pt; }}
             
-            /* Títols dels marcs (QGroupBox) */
-            QGroupBox { 
+            QGroupBox {{ 
                 border: 1px solid #333333; 
                 border-radius: 6px; 
                 margin-top: 16px; 
                 font-weight: bold;
-                font-size: 10pt;
-            }
-            QGroupBox::title { 
+                font-size: {font_size}pt;
+            }}
+            QGroupBox::title {{ 
                 subcontrol-origin: margin; 
                 subcontrol-position: top left;
                 left: 12px; 
                 top: 0px;
                 padding: 0 5px; 
-                color: #00E676; 
-                background-color: #121212;
-            }
+                color: {color_destacat}; 
+                background-color: {color_fons};
+            }}
 
-            /* Botons generals */
-            QPushButton { 
+            QPushButton {{ 
                 background-color: #252525; 
                 border: 1px solid #444; 
                 border-radius: 4px; 
                 padding: 6px 14px; 
                 font-weight: bold; 
                 min-height: 20px;
-            }
-            QPushButton:hover { background-color: #333333; }
-            QPushButton:disabled { background-color: #1a1a1a; color: #555555; border: 1px solid #222; }
+            }}
+            QPushButton:hover {{ background-color: #333333; }}
+            QPushButton:disabled {{ background-color: #1a1a1a; color: #555555; border: 1px solid #222; }}
 
-            /* Graella */
-            QTableWidget { background-color: #1E1E1E; gridline-color: #2A2A2A; border: 1px solid #333; selection-background-color: #2E7D32; }
-            QHeaderView::section { background-color: #252525; color: #00E676; font-weight: bold; border: 1px solid #333; padding: 4px; }
+            QTableWidget {{ background-color: #1E1E1E; gridline-color: #2A2A2A; border: 1px solid #333; selection-background-color: #2E7D32; }}
+            QHeaderView::section {{ background-color: #252525; color: {color_destacat}; font-weight: bold; border: 1px solid #333; padding: 4px; }}
             
-            QComboBox { background-color: #252525; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; }
-            QCheckBox { spacing: 8px; }
+            QComboBox {{ background-color: #252525; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; }}
+            QCheckBox {{ spacing: 8px; }}
+            QTabWidget::pane {{ border: 1px solid #333; border-radius: 4px; }}
+            QTabBar::tab {{ background: #252525; padding: 6px 16px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; }}
+            QTabBar::tab:selected {{ background: {color_destacat}; color: black; font-weight: bold; }}
         """)
 
         central_widget = QWidget()
@@ -181,12 +144,12 @@ class TeloManualPyQt(QMainWindow):
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(15, 15, 15, 15)
 
-        # 1. BARRA SUPERIOR (Header)
+        # 1. BARRA SUPERIOR
         header_layout = QHBoxLayout()
         
         title_label = QLabel("TELÓ 🎭")
         title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        title_label.setStyleSheet("color: #00E676;")
+        title_label.setStyleSheet(f"color: {color_destacat};")
         header_layout.addWidget(title_label)
 
         btn_open = QPushButton("📂 Obrir arxiu .SRT")
@@ -203,15 +166,18 @@ class TeloManualPyQt(QMainWindow):
         port = self.emissor.port if self.emissor else 5000
         self.ip_label = QLabel(f"🌐 Web Server: http://{ip}:{port}")
         self.ip_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        self.ip_label.setStyleSheet("color: #00E676; padding: 5px;")
+        self.ip_label.setStyleSheet(f"color: {color_destacat}; padding: 5px;")
         header_layout.addWidget(self.ip_label)
 
         main_layout.addLayout(header_layout)
 
-        # 2. SELECCIÓ D'IDIOMES
+        # 2. PANELL D'AJUSTOS EN DIRECTE HDMI
+        main_layout.addWidget(self.crear_panel_ajustos_estil_separats())
+
+        # 3. SELECCIÓ D'IDIOMES
         config_box = QGroupBox("Configuració d'Idiomes")
         config_layout = QHBoxLayout(config_box)
-        config_layout.setContentsMargins(12, 18, 12, 12)  # Més marge a dalt per no tapar el títol
+        config_layout.setContentsMargins(12, 18, 12, 12)
 
         lbl_op = QLabel("Idioma Guia Operador:")
         config_layout.addWidget(lbl_op)
@@ -231,33 +197,41 @@ class TeloManualPyQt(QMainWindow):
         config_layout.addStretch()
         main_layout.addWidget(config_box)
 
-        # 3. MONITOR DE PREVISUALITZACIÓ EN GRAN
+        # 4. MONITOR DE PREVISUALITZACIÓ EN GRAN
+        cfg_prev = ESTILS_CONFIG.get('subtitols_previsualitzacio', {})
+        prev_font = cfg_prev.get('font_family', 'Arial').split(',')[0].strip()
+        prev_size = cfg_prev.get('font_size', 15)
+        prev_text_color = cfg_prev.get('color_text', '#FFFFFF')
+        prev_bg_color = cfg_prev.get('color_fons', '#1A1A1A')
+        prev_border_color = cfg_prev.get('color_borda', '#00E676')
+
         self.display_box = QLabel("Carrega un arxiu .srt per començar")
-        self.display_box.setFont(QFont("Arial", 15, QFont.Weight.Bold))
+        self.display_box.setFont(QFont(prev_font, prev_size, QFont.Weight.Bold))
         self.display_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.display_box.setWordWrap(True)
-        self.display_box.setStyleSheet("""
-            QLabel {
-                background-color: #1A1A1A;
-                border: 2px solid #00E676;
+        self.display_box.setStyleSheet(f"""
+            QLabel {{
+                background-color: {prev_bg_color};
+                color: {prev_text_color};
+                border: 2px solid {prev_border_color};
                 border-radius: 8px;
                 padding: 12px;
                 min-height: 45px;
-            }
+            }}
         """)
         main_layout.addWidget(self.display_box)
 
-        # 4. SECCIÓ DE TEMPS I CONTROLS (START/STOP i PAUSE)
+        # 5. SECCIÓ DE TEMPS I CONTROLS
         timer_box = QGroupBox("Control Temporal de la Funció")
         timer_layout = QHBoxLayout(timer_box)
-        timer_layout.setContentsMargins(12, 18, 12, 12)  # Espai interior ajustat
+        timer_layout.setContentsMargins(12, 18, 12, 12)
 
         self.btn_start_stop = QPushButton("▶️ Start")
         self.btn_start_stop.setStyleSheet("background-color: #1b5e20; color: white;")
         self.btn_start_stop.clicked.connect(self.on_click_start_stop)
         timer_layout.addWidget(self.btn_start_stop)
 
-        self.btn_pause = QPushButton("⏸️ Pause")
+        self.btn_pause = QPushButton("⏸ Pause")
         self.btn_pause.setStyleSheet("background-color: #333333; color: #888888;")
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self.toggle_pause)
@@ -268,7 +242,7 @@ class TeloManualPyQt(QMainWindow):
         timer_layout.addWidget(QLabel("Temps Total:"))
         self.lbl_total_time = QLabel("00:00")
         self.lbl_total_time.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.lbl_total_time.setStyleSheet("color: #00E676; background-color: #1a1a1a; padding: 4px 8px; border-radius: 4px;")
+        self.lbl_total_time.setStyleSheet(f"color: {color_destacat}; background-color: #1a1a1a; padding: 4px 8px; border-radius: 4px;")
         timer_layout.addWidget(self.lbl_total_time)
 
         timer_layout.addSpacing(15)
@@ -290,7 +264,7 @@ class TeloManualPyQt(QMainWindow):
         timer_layout.addStretch()
         main_layout.addWidget(timer_box)
 
-        # 5. BOTONS DE NAVEGACIÓ I CONTROL DIRECTE
+        # 6. BOTONS DE NAVEGACIÓ I CONTROL DIRECTE
         ctrl_layout = QHBoxLayout()
 
         self.btn_prev = QPushButton("⏮ Anterior (←)")
@@ -312,7 +286,7 @@ class TeloManualPyQt(QMainWindow):
 
         main_layout.addLayout(ctrl_layout)
 
-        # 6. GRAELLA DE SUBTÍTOLS
+        # 7. GRAELLA DE SUBTÍTOLS
         self.table = QTableWidget()
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["#", "Temps", "Text del Subtítol"])
@@ -328,6 +302,67 @@ class TeloManualPyQt(QMainWindow):
         self.table.cellClicked.connect(self.on_cell_clicked)
         main_layout.addWidget(self.table)
 
+    def crear_panel_ajustos_estil_separats(self):
+        group_box = QGroupBox("🖥️ Control d'Estils del Projector HDMI (En Directe)")
+        group_layout = QVBoxLayout(group_box)
+
+        tabs = QTabWidget()
+
+        for target_key, target_label in [('orig', '🟢 Text Superior / Principal'), ('trans', '🔵 Text Inferior / Secundari')]:
+            tab = QWidget()
+            layout = QHBoxLayout(tab)
+
+            layout.addWidget(QLabel("Font:"))
+            combo_font = QComboBox()
+            combo_font.addItems(["Arial", "Courier New", "Verdana", "Times New Roman", "Trebuchet MS"])
+            combo_font.currentTextChanged.connect(lambda val, tk=target_key: self.actualitzar_estil_hdmi(tk, 'font_family', val))
+            layout.addWidget(combo_font)
+
+            layout.addSpacing(10)
+
+            layout.addWidget(QLabel("Mida:"))
+            combo_size = QComboBox()
+            combo_size.addItems(["24", "28", "32", "38", "44", "50", "60", "72"])
+            combo_size.setCurrentText("38")
+            combo_size.currentTextChanged.connect(lambda val, tk=target_key: self.actualitzar_estil_hdmi(tk, 'font_size', val))
+            layout.addWidget(combo_size)
+
+            layout.addSpacing(10)
+
+            btn_text_color = QPushButton("🎨 Color Text")
+            btn_text_color.clicked.connect(lambda _, tk=target_key: self.seleccionar_color_hdmi(tk, 'color_text'))
+            layout.addWidget(btn_text_color)
+
+            layout.addStretch()
+            tabs.addTab(tab, target_label)
+
+        tab_bg = QWidget()
+        layout_bg = QHBoxLayout(tab_bg)
+        btn_bg_color = QPushButton("⬛ Color de Fons General HDMI")
+        btn_bg_color.clicked.connect(lambda: self.seleccionar_color_hdmi('both', 'color_fons'))
+        layout_bg.addWidget(btn_bg_color)
+        layout_bg.addStretch()
+        tabs.addTab(tab_bg, "🎨 Fons General")
+
+        group_layout.addWidget(tabs)
+        return group_box
+
+    def seleccionar_color_hdmi(self, target_key, color_type):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.actualitzar_estil_hdmi(target_key, color_type, color.name())
+
+    def actualitzar_estil_hdmi(self, target_key, prop_name, value):
+        if hasattr(self, 'projector_window') and self.projector_window:
+            kwargs = {
+                'target': target_key,
+                'font_family': value if prop_name == 'font_family' else None,
+                'font_size': value if prop_name == 'font_size' else None,
+                'font_color': value if prop_name == 'color_text' else None,
+                'bg_color': value if prop_name == 'color_fons' else None,
+            }
+            self.projector_window.actualitzar_estils_hdmi(**kwargs)
+
     def closeEvent(self, event):
         try:
             if hasattr(self, 'projector_window') and self.projector_window:
@@ -337,17 +372,7 @@ class TeloManualPyQt(QMainWindow):
         event.accept()
 
     def detectar_segona_pantalla(self):
-        try:
-            screens = QApplication.screens()
-            if len(screens) > 1:
-                second_screen = screens[1]
-                self.projector_window.setScreen(second_screen)
-                self.projector_window.move(second_screen.geometry().x(), second_screen.geometry().y())
-                self.projector_window.showFullScreen()
-            else:
-                self.projector_window.hide()
-        except Exception as e:
-            print(f"Error detectant pantalles: {e}")
+        self.projector_window.assignar_a_segona_pantalla()
 
     def toggle_projector_window(self):
         if self.projector_window.isVisible():
@@ -355,7 +380,6 @@ class TeloManualPyQt(QMainWindow):
         else:
             self.projector_window.show()
 
-    # --- LÒGICA DE CONTROLS TEMPORALS ---
     def on_click_start_stop(self):
         if not self.session_started:
             self.start_session()
@@ -461,7 +485,6 @@ class TeloManualPyQt(QMainWindow):
         else:
             self.lbl_sub_countdown.setText("FI")
 
-    # --- PARSEJADOR DE SUBTÍTOLS ---
     def open_srt_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Obrir SRT", "", "Subtítols SRT (*.srt)")
         if file_path:
@@ -513,7 +536,10 @@ class TeloManualPyQt(QMainWindow):
                     "texts": texts_by_lang
                 })
 
-        self.detected_langs = list(detected_tag_set)
+        self.detected_langs = [lang for lang in IDIOMES_ORDRE if lang in detected_tag_set]
+        for lang in detected_tag_set:
+            if lang not in self.detected_langs:
+                self.detected_langs.append(lang)
 
     def configurar_canals_i_ui(self):
         if self.emissor:
@@ -637,12 +663,17 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     emissor = None
-    try:
-        emissor = EmissorWeb(CONFIG_SERVER)
-        emissor.iniciar()
-        emissor.mostrar_benvinguda()
-    except Exception as e:
-        print(f"⚠️ Alerta en iniciar el servidor web: {e}")
+    if EmissorWeb is not None:
+        try:
+            CONFIG_SERVER['channels'] = [{'id': item['id'].lower(), 'label': item['label']} for item in IDIOMES_CONFIG]
+            CONFIG_SERVER['estils'] = ESTILS_CONFIG
+
+            emissor = EmissorWeb(CONFIG_SERVER)
+            emissor.iniciar()
+        except Exception as e:
+            print(f"⚠️ Alerta en iniciar el servidor web: {e}")
+    else:
+        print("⚠️ Advertència: El servidor web funcionarà desactivat per falta de mòduls.")
 
     window = TeloManualPyQt(emissor)
     window.show()

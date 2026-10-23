@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TELÓ - Selecció de Canal</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #00E676;
+            margin-bottom: 10px;
+        }
+        p {
+            color: #aaa;
+            margin-bottom: 30px;
+        }
+        .channel-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .channel-btn {
+            background-color: #1e1e1e;
+            color: #ffffff;
+            border: 2px solid #00E676;
+            padding: 15px 20px;
+            border-radius: 8px;
+            text-decoration: none;
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            transition: all 0.2s ease;
+        }
+        .channel-btn:hover {
+            background-color: #00E676;
+            color: #121212;
+        }
+        .no-channels {
+            color: #888;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>TELÓ 🎭</h1>
+    <p>Selecciona un canal per veure els subtítols en directe:</p>
+
+    <div class="channel-list">
+        {% if channels %}
+            {% for ch in channels %}
+                <a href="/{{ ch.id }}" class="channel-btn">{{ ch.label }}</a>
+            {% endfor %}
+        {% else %}
+            <p class="no-channels">No hi ha cap canal actiu en aquest moment. Carrega un fitxer SRT al panell de control.</p>
+        {% endif %}
+    </div>
+</body>
+</html>
