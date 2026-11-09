@@ -3,7 +3,6 @@ import socket
 import threading
 import sys
 import logging
-import yaml
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room
 
@@ -12,7 +11,7 @@ log.setLevel(logging.ERROR)
 
 
 class EmissorWeb:
-    def __init__(self, config_server, mode="AUTOMÀTIC", config_path=None):
+    def __init__(self, config_server, mode="AUTOMÀTIC", config_styles=None, config_full=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         template_folder = os.path.join(base_dir, '..', 'templates')
 
@@ -28,12 +27,16 @@ class EmissorWeb:
         self.channels = config_server.get('channels', [])
         self.stats_audiencia = {ch['id']: 0 for ch in self.channels}
 
-        # Ruta i càrrega de la configuració d'estils web del YAML unificat (configTelo.yaml)
-        self.config_path = config_path or os.path.join(base_dir, '..', 'configTelo.yaml')
-        self.estils_web = self._carregar_estils_web()
+        # Resolució dels estils en memòria
+        styles_cfg = config_styles
+        if not styles_cfg and config_full:
+            styles_cfg = config_full.get('common', {}).get('styles', {})
+        styles_cfg = styles_cfg or {}
 
-    def _carregar_estils_web(self):
-        """Llegeix els paràmetres d'estils des de la secció 'common -> styles' del configTelo.yaml."""
+        self.estils_web = self._processar_estils_web(styles_cfg)
+
+    def _processar_estils_web(self, styles_cfg):
+        """Processa el diccionari d'estils passat pel client en memòria."""
         estils_defecte = {
             'normal': {
                 'font_family': 'Arial, sans-serif',
@@ -41,7 +44,7 @@ class EmissorWeb:
                 'font_color': '#FFFFFF',
                 'background_color': '#000000',
                 'alignment': 'center',
-                'max_lines': 3
+                'max_lines': 2
             },
             'ulleres': {
                 'font_family': "'Courier New', monospace",
@@ -49,38 +52,31 @@ class EmissorWeb:
                 'font_color': '#00FF66',
                 'background_color': '#000000',
                 'alignment': 'center',
-                'max_lines': 3
+                'max_lines': 1
             }
         }
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    cfg = yaml.safe_load(f) or {}
-                    styles_cfg = cfg.get('common', {}).get('styles', {})
-                    web_cfg = styles_cfg.get('web', {})
-                    glasses_cfg = styles_cfg.get('glasses', {})
 
-                    return {
-                        'normal': {
-                            'font_family': web_cfg.get('font_family', estils_defecte['normal']['font_family']),
-                            'font_size': web_cfg.get('font_size', estils_defecte['normal']['font_size']),
-                            'font_color': web_cfg.get('font_color', estils_defecte['normal']['font_color']),
-                            'background_color': web_cfg.get('background_color', estils_defecte['normal']['background_color']),
-                            'alignment': 'center',
-                            'max_lines': 3
-                        },
-                        'ulleres': {
-                            'font_family': glasses_cfg.get('font_family', estils_defecte['ulleres']['font_family']),
-                            'font_size': glasses_cfg.get('font_size', estils_defecte['ulleres']['font_size']),
-                            'font_color': glasses_cfg.get('font_color', estils_defecte['ulleres']['font_color']),
-                            'background_color': glasses_cfg.get('background_color', estils_defecte['ulleres']['background_color']),
-                            'alignment': 'center',
-                            'max_lines': 3
-                        }
-                    }
-            except Exception as e:
-                print(f"⚠️ Error llegint estils web del YAML: {e}")
-        return estils_defecte
+        web_cfg = styles_cfg.get('web', {})
+        glasses_cfg = styles_cfg.get('glasses', {})
+
+        return {
+            'normal': {
+                'font_family': web_cfg.get('font_family', estils_defecte['normal']['font_family']),
+                'font_size': web_cfg.get('font_size', estils_defecte['normal']['font_size']),
+                'font_color': web_cfg.get('font_color', estils_defecte['normal']['font_color']),
+                'background_color': web_cfg.get('background_color', estils_defecte['normal']['background_color']),
+                'alignment': web_cfg.get('alignment', estils_defecte['normal']['alignment']),
+                'max_lines': web_cfg.get('max_lines', estils_defecte['normal']['max_lines'])
+            },
+            'ulleres': {
+                'font_family': glasses_cfg.get('font_family', estils_defecte['ulleres']['font_family']),
+                'font_size': glasses_cfg.get('font_size', estils_defecte['ulleres']['font_size']),
+                'font_color': glasses_cfg.get('font_color', estils_defecte['ulleres']['font_color']),
+                'background_color': glasses_cfg.get('background_color', estils_defecte['ulleres']['background_color']),
+                'alignment': glasses_cfg.get('alignment', estils_defecte['ulleres']['alignment']),
+                'max_lines': glasses_cfg.get('max_lines', estils_defecte['ulleres']['max_lines'])
+            }
+        }
 
     def obtenir_ip_local(self):
         try:

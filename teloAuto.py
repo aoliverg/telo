@@ -3,6 +3,7 @@ import os
 import time
 import socket
 import subprocess
+import signal
 import math
 import numpy as np
 import yaml
@@ -10,19 +11,18 @@ import yaml
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QTextEdit, QComboBox, QGroupBox, QMessageBox, 
-    QCheckBox, QColorDialog, QProgressBar
+    QCheckBox, QColorDialog, QProgressBar, QTableWidget, QHeaderView,
+    QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor, QFontMetrics
 
-# Importació de sounddevice per al control de micròfons
 try:
     import sounddevice as sd
 except ImportError:
     sd = None
-    print("⚠️ Advertència: 'sounddevice' no està instal·lat. El vúmetre no estarà disponible.")
+    print("⚠️ Advertència: 'sounddevice' no està instal·lat.")
 
-# Directoris del projecte
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(BASE_DIR, 'src')
 CONFIG_YAML_PATH = os.path.join(BASE_DIR, 'config.yaml')
@@ -30,7 +30,6 @@ CONFIG_YAML_PATH = os.path.join(BASE_DIR, 'config.yaml')
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-# Importació de mòduls des de src/
 try:
     from emissor import EmissorWeb
 except ImportError as e:
@@ -54,38 +53,37 @@ def carregar_configuracio_yaml():
     if os.path.exists(CONFIG_YAML_PATH):
         try:
             with open(CONFIG_YAML_PATH, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f)
+                return yaml.safe_load(f) or {}
         except Exception as e:
             print(f"⚠️ Error llegint {CONFIG_YAML_PATH}: {e}")
     return {}
 
 
-# Càrrega de Seccions
 CONFIG_FULL = carregar_configuracio_yaml()
 CONFIG_COMMON = CONFIG_FULL.get('common', {})
 CONFIG_AUTO = CONFIG_FULL.get('auto', {})
 STYLES_CFG = CONFIG_COMMON.get('styles', {})
 WHISPER_CFG = CONFIG_AUTO.get('whisper_live', {})
 
-CONFIG_SERVER = CONFIG_COMMON.get('server', {'host': '0.0.0.0', 'port': 5000})
+CONFIG_SERVER = CONFIG_COMMON.get('server', {'host': '0.0.0.0', 'port': 5000, 'enabled': True})
+if CONFIG_SERVER.get('host') == '00.0.0':
+    CONFIG_SERVER['host'] = '0.0.0.0'
+
 CONFIG_SERVER['channels'] = [
     {'id': 'auto_original', 'label': 'Transcripció (Original)'},
     {'id': 'auto_translation', 'label': 'Traducció en Directe'}
 ]
 
+WEB_SERVER_ENABLED = CONFIG_SERVER.get('enabled', True)
+HDMI_ENABLED = STYLES_CFG.get('hdmi', {}).get('enabled', True)
 
-# --- CÀLCUL EXACTE EN PÍXELS PER AL LÍMIT DE LÍNIES VISUALS EN QT ---
+
 def ajustar_text_a_linies_reals_qt(text, font, ample_disponible_px, max_lines):
-    """
-    Calcula exactament on trenca visualment el text en píxels reals
-    segons la font, mida i amplada física del contenidor,
-    i retorna estrictament les darreres 'max_lines'.
-    """
     if not text or max_lines <= 0:
         return text
 
     metrics = QFontMetrics(font)
-    paragrafs = text.split('\n')
+    paragrafs = str(text).split('\n')
     linies_totals = []
 
     for par in paragrafs:
@@ -114,13 +112,36 @@ def ajustar_text_a_linies_reals_qt(text, font, ample_disponible_px, max_lines):
     return '\n'.join(linies_totals)
 
 
-# --- UTILITATS DE GESTIÓ DEL SERVIDOR WLK ---
 def comprovar_servidor_actiu(host='localhost', port=8000, timeout=1.0):
     try:
         with socket.create_connection((host, int(port)), timeout=timeout):
             return True
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
+
+
+def aturar_servidor_wlk_complet(process=None, port=8000, log_callback=None):
+    if process:
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(0.3)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+    if os.name != 'nt':
+        try:
+            subprocess.run(f"fuser -k -9 {port}/tcp", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        try:
+            subprocess.run("pkill -9 -f 'wlk --pcm-input'", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    if log_callback:
+        log_callback("🛑 Servidor WLK aturat i port alliberat.")
 
 
 def assegurar_servidor_wlk(cfg_wlk, log_callback=None):
@@ -150,7 +171,7 @@ def assegurar_servidor_wlk(cfg_wlk, log_callback=None):
         preexec_fn=os.setsid if os.name != 'nt' else None
     )
 
-    max_retries = 30
+    max_retries = 40
     for _ in range(max_retries):
         time.sleep(1.0)
         if comprovar_servidor_actiu(host, port):
@@ -163,7 +184,6 @@ def assegurar_servidor_wlk(cfg_wlk, log_callback=None):
     return process
 
 
-# --- FIL DE MONITORATGE DEL NIVELL DEL MICRÒFON (VÚMETRE) ---
 class AudioLevelMonitorThread(QThread):
     level_signal = pyqtSignal(int)
 
@@ -201,16 +221,15 @@ class AudioLevelMonitorThread(QThread):
                 callback=audio_callback
             ):
                 while self.running:
-                    time.sleep(0.05)
+                    time.sleep(0.08)
         except Exception as e:
-            print(f"⚠️ Error monitoritzant micròfon: {e}")
+            print(f"⚠️ Monitor àudio: {e}")
 
     def stop(self):
         self.running = False
         self.wait(500)
 
 
-# --- FINESTRA DEL PROJECTOR HDMI DINÀMICA PER A TELOAUTO ---
 class ProjectorAutoWindow(QMainWindow):
     def __init__(self, app_title="TELÓ", config_proj=None):
         super().__init__()
@@ -227,6 +246,9 @@ class ProjectorAutoWindow(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
+        # 1. Eliminem marcs, vores i barra de títol de la finestra
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
+
         self.setWindowTitle(f"{self.app_title} - Projector HDMI")
         self.setStyleSheet(f"background-color: {self.bg_color};")
         
@@ -271,7 +293,7 @@ class ProjectorAutoWindow(QMainWindow):
             lbl.setFont(font)
             
             text_ajustat = ajustar_text_a_linies_reals_qt(
-                text, 
+                str(text), 
                 font, 
                 ample_disponible_px, 
                 max_lines=self.max_lines
@@ -309,7 +331,6 @@ class ProjectorAutoWindow(QMainWindow):
             self.showFullScreen()
 
 
-# --- FIL ASÍNCRON D'ÀUDIO I TRANSCRIPCIÓ ---
 class AudioThread(QThread):
     subtitol_generat = pyqtSignal(dict)
     estat_canviat = pyqtSignal(str)
@@ -323,10 +344,10 @@ class AudioThread(QThread):
         self.running = True
         self.estat_canviat.emit("Connectant al servidor WhisperLiveKit...")
         
-        def callback_resultat(dades, linies=None):
+        def callback_resultat(dades):
             if self.running and dades:
                 if isinstance(dades, str):
-                    dades = {"original": dades, "translation": ""}
+                    dades = {"original": dades, "translation": "", "es_consolidat": False}
                 self.subtitol_generat.emit(dades)
 
         try:
@@ -345,11 +366,13 @@ class AudioThread(QThread):
         self.estat_canviat.emit("Aturat")
 
 
-# --- INTERFÍCIE PRINCIPAL PYQT6 ---
 class TeloAutoPyQt(QMainWindow):
     def __init__(self, emissor):
         super().__init__()
         self.emissor = emissor
+        self.web_enabled = WEB_SERVER_ENABLED and (self.emissor is not None)
+        self.hdmi_enabled = HDMI_ENABLED
+
         self.session_started = False
         self.is_paused = False
         self.is_blackout = False
@@ -370,50 +393,98 @@ class TeloAutoPyQt(QMainWindow):
         self.color_btn_bg = colors_cfg.get('button_bg', '#252525')
         self.color_btn_border = colors_cfg.get('button_border', '#444444')
 
-        self.color_proj_orig = self.color_primary
-        self.color_proj_trans = self.color_secondary
+        self.hdmi_items_data = [
+            {'id': 'orig', 'label': 'Transcripció (Original)', 'color': self.color_primary, 'enabled': True},
+            {'id': 'trans', 'label': 'Traducció en Directe', 'color': self.color_secondary, 'enabled': True}
+        ]
 
         self.raw_text_orig = ""
         self.raw_text_trans = ""
+        
+        self.ultim_log_orig = ""
+        self.ultim_log_trans = ""
 
         self.max_lines_hdmi = STYLES_CFG.get('hdmi', {}).get('max_lines', 3)
-
         self.projector_cfg = STYLES_CFG.get('hdmi', {})
-        self.languages_cfg = CONFIG_COMMON.get('languages', {'ca': 'Català', 'es': 'Español'})
+        self.languages_cfg = CONFIG_COMMON.get('languages', {'ca': 'Català', 'es': 'Español', 'fr': 'Français'})
         self.translation_cfg = CONFIG_AUTO.get('translation', {})
+        self.audio_cfg = CONFIG_AUTO.get('audio', {})
 
         self.total_elapsed_ms = 0
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.update_timers)
 
-        self.projector_window = ProjectorAutoWindow(app_title=self.app_title, config_proj=self.projector_cfg)
-
-        self.init_ui()
-        self.detectar_segona_pantalla()
-
-        self.carregar_dispositius_audio()
-        self.iniciar_monitoratge_audio()
-        self.verificar_servidor_wlk()
-
-        if TranscriptorWhisperLiveKit is not None:
-            self.transcriptor = TranscriptorWhisperLiveKit(config_path=CONFIG_YAML_PATH)
-            try:
-                self.transcriptor.inicialitzar_motor()
-            except Exception as e:
-                self.log(f"⚠️ Alerta en inicialitzar el motor del transcriptor: {e}")
+        if self.hdmi_enabled:
+            self.projector_window = ProjectorAutoWindow(app_title=self.app_title, config_proj=self.projector_cfg)
         else:
-            self.transcriptor = None
+            self.projector_window = None
 
-        if self.transcriptor:
-            self.transcriptor.translation_enabled = self.chk_translation.isChecked()
+        # 1. Primer construïm la UI completament (assegura que self.log_edit existeixi)
+        self.init_ui()
+        if self.hdmi_enabled:
+            self.dibuixar_taula_hdmi()
+            self.detectar_segona_pantalla()
+
+        # 2. Després inicialitzem els subsistemes
+        self.carregar_dispositius_audio()
+        self.verificar_servidor_wlk()
+        self.inicialitzar_transcriptor()
 
     def log(self, text):
-        if hasattr(self, 'log_edit'):
-            self.log_edit.append(text)
+        """Escriu al panell inferior de registre i a la consola."""
+        if hasattr(self, 'log_edit') and self.log_edit is not None:
+            self.log_edit.append(str(text))
             self.log_edit.moveCursor(QTextCursor.MoveOperation.End)
         else:
-            print(text)
+            print(str(text))
+
+    def inicialitzar_transcriptor(self):
+        if TranscriptorWhisperLiveKit is None:
+            self.transcriptor = None
+            return
+
+        lang_in = (
+            self.combo_lang_in.currentData()
+            if hasattr(self, 'combo_lang_in') and self.combo_lang_in.currentData()
+            else CONFIG_AUTO.get('input_language', 'fr')
+        )
+        lang_target = (
+            self.combo_lang_target.currentData()
+            if hasattr(self, 'combo_lang_target') and self.combo_lang_target.currentData()
+            else self.translation_cfg.get('target_language', 'ca')
+        )
+        trans_on = (
+            self.chk_translation.isChecked()
+            if hasattr(self, 'chk_translation')
+            else self.translation_cfg.get('enabled', True)
+        )
+        dev = (
+            self.combo_audio_device.currentData()
+            if hasattr(self, 'combo_audio_device')
+            else self.audio_cfg.get('device', None)
+        )
+
+        config_transcriptor = {
+            "whisper_live": WHISPER_CFG,
+            "input_language": lang_in,
+            "translation": {
+                "enabled": trans_on,
+                "target_language": lang_target,
+            },
+            "audio": {
+                "samplerate": self.audio_cfg.get('samplerate', 16000),
+                "block_ms": self.audio_cfg.get('block_ms', 100),
+                "device": dev,
+            },
+            "show_info": True,
+        }
+
+        try:
+            self.transcriptor = TranscriptorWhisperLiveKit(config=config_transcriptor)
+            self.transcriptor.inicialitzar_motor()
+        except Exception as e:
+            self.log(f"⚠️ Alerta en inicialitzar el transcriptor: {e}")
 
     def verificar_servidor_wlk(self):
         try:
@@ -422,35 +493,47 @@ class TeloAutoPyQt(QMainWindow):
             self.log(f"⚠️ Error gestionant el servidor WLK: {e}")
 
     def carregar_dispositius_audio(self):
+        self.combo_audio_device.blockSignals(True)
         self.combo_audio_device.clear()
         self.combo_audio_device.addItem("Micròfon per defecte del sistema", None)
 
-        if sd is None:
+        if sd is not None:
+            try:
+                devices = sd.query_devices()
+                apis = sd.query_hostapis()
+                for idx, dev in enumerate(devices):
+                    if dev.get('max_input_channels', 0) > 0:
+                        nom = str(dev.get('name', f'Dispositiu {idx}'))
+                        host_idx = dev.get('hostapi', 0)
+                        host_api = str(apis[host_idx].get('name', '')) if host_idx < len(apis) else ''
+                        etiqueta = f"{nom} ({host_api})" if host_api else nom
+                        self.combo_audio_device.addItem(etiqueta, idx)
+            except Exception as e:
+                self.log(f"⚠️ Error consultant targetes d'àudio: {e}")
+        else:
             self.combo_audio_device.setEnabled(False)
-            return
 
-        try:
-            devices = sd.query_devices()
-            for idx, dev in enumerate(devices):
-                if dev.get('max_input_channels', 0) > 0:
-                    nom = dev.get('name', f'Dispositiu {idx}')
-                    host_api = sd.query_hostapis(dev.get('hostapi', 0)).get('name', '')
-                    etiqueta = f"{nom} ({host_api})" if host_api else nom
-                    self.combo_audio_device.addItem(etiqueta, idx)
-        except Exception as e:
-            self.log(f"⚠️ Error consultant targetes d'àudio: {e}")
+        self.combo_audio_device.blockSignals(False)
 
-    def iniciar_monitoratge_audio(self):
-        if sd is None:
-            return
-        selected_dev = self.combo_audio_device.currentData()
-        self.monitor_thread = AudioLevelMonitorThread(device_index=selected_dev)
-        self.monitor_thread.level_signal.connect(self.actualitzar_vumetre)
-        self.monitor_thread.start()
+    def toggle_vumetre(self, estat):
+        if estat:
+            if sd is None:
+                return
+            selected_dev = self.combo_audio_device.currentData()
+            self.monitor_thread = AudioLevelMonitorThread(device_index=selected_dev)
+            self.monitor_thread.level_signal.connect(self.actualitzar_vumetre)
+            self.monitor_thread.start()
+            self.vu_meter.setEnabled(True)
+        else:
+            if self.monitor_thread:
+                self.monitor_thread.stop()
+                self.monitor_thread = None
+            self.vu_meter.setValue(0)
+            self.vu_meter.setEnabled(False)
 
-    def canviar_dispositiu_mic(self):
+    def canviar_dispositiu_mic(self, index=None):
         nou_dev = self.combo_audio_device.currentData()
-        if self.monitor_thread:
+        if hasattr(self, 'chk_activar_vu') and self.chk_activar_vu.isChecked() and self.monitor_thread:
             self.monitor_thread.stop()
             self.monitor_thread.set_device(nou_dev)
             self.monitor_thread.start()
@@ -477,8 +560,8 @@ class TeloAutoPyQt(QMainWindow):
             """)
 
     def init_ui(self):
-        self.setWindowTitle(f"{self.app_title} 🤖")
-        self.resize(1180, 980)
+        self.setWindowTitle(f"{self.app_title} 🤖 - Optimitzat")
+        self.resize(1200, 980)
         
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: {self.color_bg}; }}
@@ -505,6 +588,20 @@ class TeloAutoPyQt(QMainWindow):
                 font-weight: bold; min-height: 22px;
             }}
             QPushButton:hover {{ background-color: {self.color_btn_border}; }}
+
+            QTableWidget {{ 
+                background-color: {self.color_panel_bg}; 
+                gridline-color: #2A2A2A; 
+                border: 1px solid {self.color_btn_border}; 
+                selection-background-color: #2E7D32; 
+            }}
+            QHeaderView::section {{ 
+                background-color: {self.color_btn_bg}; 
+                color: {self.color_primary}; 
+                font-weight: bold; 
+                border: 1px solid {self.color_btn_border}; 
+                padding: 4px; 
+            }}
 
             QTextEdit {{ background-color: {self.color_panel_bg}; border: 1px solid {self.color_btn_border}; color: {self.color_text}; font-family: monospace; }}
             QComboBox {{ background-color: {self.color_btn_bg}; border: 1px solid {self.color_btn_border}; padding: 4px 8px; border-radius: 4px; }}
@@ -536,80 +633,141 @@ class TeloAutoPyQt(QMainWindow):
         title_label.setStyleSheet(f"color: {self.color_primary};")
         header_layout.addWidget(title_label)
 
-        btn_toggle_proj = QPushButton("🖥️ Projector HDMI")
-        btn_toggle_proj.clicked.connect(self.toggle_projector_window)
-        header_layout.addWidget(btn_toggle_proj)
+        if self.hdmi_enabled:
+            btn_toggle_proj = QPushButton("🖥️ Projector HDMI")
+            btn_toggle_proj.clicked.connect(self.toggle_projector_window)
+            header_layout.addWidget(btn_toggle_proj)
 
         header_layout.addStretch()
 
-        ip = self.emissor.obtenir_ip_local() if self.emissor else "127.0.0.1"
-        port = self.emissor.port if self.emissor else 5000
-        url_auto = f"http://{ip}:{port}"
+        if self.web_enabled:
+            ip = self.emissor.obtenir_ip_local() if hasattr(self.emissor, 'obtenir_ip_local') else "127.0.0.1"
+            port = self.emissor.port if hasattr(self.emissor, 'port') else 5000
+            url_auto = f"http://{ip}:{port}"
+            self.ip_label = QLabel(f'🌐 Web Server: <a href="{url_auto}" style="color: {self.color_primary};">{url_auto}</a>')
+            self.ip_label.setOpenExternalLinks(True)
+        else:
+            self.ip_label = QLabel('🌐 Web Server: <span style="color: #7f8c8d;">Desactivat</span>')
 
-        self.ip_label = QLabel(f'🌐 Web Server: <a href="{url_auto}" style="color: {self.color_primary};">{url_auto}</a>')
         self.ip_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        self.ip_label.setOpenExternalLinks(True)
         header_layout.addWidget(self.ip_label)
 
         main_layout.addLayout(header_layout)
 
         # 2. PANELL D'AJUSTOS EN DIRECTE HDMI
-        main_layout.addWidget(self.crear_panel_ajustos_estil())
+        if self.hdmi_enabled:
+            main_layout.addWidget(self.crear_panel_ajustos_estil())
 
         # 3. PANELL D'ENTRADA D'ÀUDIO I VÚMETRE
-        audio_box = QGroupBox("🎙️ Control d'Entrada d'Àudio i Nivell de Micròfon")
+        audio_box = QGroupBox("🎙️ Control d'Entrada d'Àudio")
         audio_layout = QHBoxLayout(audio_box)
         audio_layout.setContentsMargins(12, 18, 12, 12)
 
-        audio_layout.addWidget(QLabel("Dispositiu d'entrada:"))
+        audio_layout.addWidget(QLabel("Dispositiu:"))
         self.combo_audio_device = QComboBox()
         self.combo_audio_device.currentIndexChanged.connect(self.canviar_dispositiu_mic)
         audio_layout.addWidget(self.combo_audio_device, 3)
 
-        audio_layout.addSpacing(20)
+        audio_layout.addSpacing(15)
 
-        audio_layout.addWidget(QLabel("Senyal / Vúmetre:"))
+        self.chk_activar_vu = QCheckBox("Activar Vúmetre")
+        self.chk_activar_vu.setChecked(False)
+        self.chk_activar_vu.toggled.connect(self.toggle_vumetre)
+        audio_layout.addWidget(self.chk_activar_vu)
+
         self.vu_meter = QProgressBar()
         self.vu_meter.setRange(0, 100)
         self.vu_meter.setValue(0)
         self.vu_meter.setTextVisible(False)
         self.vu_meter.setFixedHeight(18)
+        self.vu_meter.setEnabled(False)
         audio_layout.addWidget(self.vu_meter, 2)
 
         main_layout.addWidget(audio_box)
 
-        # 4. CONFIGURACIÓ ASR I TRADUCCIÓ
-        config_box = QGroupBox("Configuració ASR i Traducció")
+        # 4. CONFIGURACIÓ D'IDIOMES I HDMI
+        config_box = QGroupBox("Configuració ASR, Traducció i Control de Sortida" + (" HDMI" if self.hdmi_enabled else ""))
         config_layout = QHBoxLayout(config_box)
+        config_layout.setContentsMargins(12, 18, 12, 12)
 
-        config_layout.addWidget(QLabel("Idioma Entrada (ASR):"))
+        col_asr = QVBoxLayout()
+        col_asr.addWidget(QLabel("Idioma Entrada (ASR):"))
         self.combo_lang_in = QComboBox()
-        for code, name in self.languages_cfg.items():
-            self.combo_lang_in.addItem(name, code)
-        config_layout.addWidget(self.combo_lang_in)
+        default_lang_in = CONFIG_AUTO.get('input_language', 'fr')
+        idx_in_selected = 0
+        for idx, (code, name) in enumerate(self.languages_cfg.items()):
+            self.combo_lang_in.addItem(str(name), str(code))
+            if str(code).lower() == str(default_lang_in).lower():
+                idx_in_selected = idx
+        self.combo_lang_in.setCurrentIndex(idx_in_selected)
+        col_asr.addWidget(self.combo_lang_in)
 
-        config_layout.addSpacing(20)
+        col_asr.addSpacing(10)
 
         is_trans_enabled = self.translation_cfg.get('enabled', True)
         self.chk_translation = QCheckBox("Activar Traducció")
         self.chk_translation.setChecked(is_trans_enabled)
-        self.chk_translation.toggled.connect(self.on_toggle_translation)
-        config_layout.addWidget(self.chk_translation)
-
-        config_layout.addSpacing(10)
+        self.chk_translation.toggled.connect(self.on_toggle_translation_chk)
+        col_asr.addWidget(self.chk_translation)
 
         self.combo_lang_target = QComboBox()
-        target_default = self.translation_cfg.get('target_language', 'es')
+        target_default = self.translation_cfg.get('target_language', 'ca')
+        idx_target_selected = 0
         for idx, (code, name) in enumerate(self.languages_cfg.items()):
-            self.combo_lang_target.addItem(name, code)
-            if code == target_default:
-                self.combo_lang_target.setCurrentIndex(idx)
-        config_layout.addWidget(self.combo_lang_target)
+            self.combo_lang_target.addItem(str(name), str(code))
+            if str(code).lower() == str(target_default).lower():
+                idx_target_selected = idx
+        self.combo_lang_target.setCurrentIndex(idx_target_selected)
+        col_asr.addWidget(self.combo_lang_target)
 
-        config_layout.addStretch()
+        self.btn_aplicar_idiomes = QPushButton("⚡ Aplicar Idiomes")
+        self.btn_aplicar_idiomes.setStyleSheet("background-color: #0277BD; color: white;")
+        self.btn_aplicar_idiomes.clicked.connect(self.aplicar_idiomes_manual)
+        col_asr.addWidget(self.btn_aplicar_idiomes)
+
+        col_asr.addStretch()
+        config_layout.addLayout(col_asr, 2)
+        config_layout.addSpacing(20)
+
+        if self.hdmi_enabled:
+            col_hdmi = QVBoxLayout()
+            col_hdmi.addWidget(QLabel("Sortida Projector HDMI:"))
+
+            hdmi_table_layout = QHBoxLayout()
+            self.table_hdmi = QTableWidget()
+            self.table_hdmi.setColumnCount(3)
+            self.table_hdmi.setHorizontalHeaderLabels(["Actiu i Canal", "Mostra", "Acció"])
+            self.table_hdmi.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            self.table_hdmi.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.table_hdmi.setMinimumHeight(110)
+
+            hd_header = self.table_hdmi.horizontalHeader()
+            hd_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            hd_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            hd_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+            self.table_hdmi.setColumnWidth(1, 60)
+            self.table_hdmi.setColumnWidth(2, 110)
+
+            hdmi_table_layout.addWidget(self.table_hdmi, 4)
+
+            btn_order_box = QVBoxLayout()
+            self.btn_move_up = QPushButton("⬆️ Pujar")
+            self.btn_move_up.clicked.connect(self.moure_canal_amunt)
+            btn_order_box.addWidget(self.btn_move_up)
+
+            self.btn_move_down = QPushButton("⬇️ Baixar")
+            self.btn_move_down.clicked.connect(self.moure_canal_avall)
+            btn_order_box.addWidget(self.btn_move_down)
+            btn_order_box.addStretch()
+
+            hdmi_table_layout.addLayout(btn_order_box, 1)
+            col_hdmi.addLayout(hdmi_table_layout)
+
+            config_layout.addLayout(col_hdmi, 4)
+
         main_layout.addWidget(config_box)
 
-        # 5. PREVISUALITZACIÓ DUAL / INDIVIDUAL
+        # 5. PREVISUALITZACIÓ
         self.display_layout = QHBoxLayout()
 
         self.box_orig_widget = QWidget()
@@ -640,9 +798,7 @@ class TeloAutoPyQt(QMainWindow):
         self.display_layout.addWidget(self.box_trans_widget)
         main_layout.addLayout(self.display_layout)
 
-        self.on_toggle_translation(is_trans_enabled)
-
-        # 6. CONTROLS DE SESSIÓ I TEMPS
+        # 6. CONTROLS DE SESSIÓ
         timer_box = QGroupBox("Control Temporal")
         timer_layout = QHBoxLayout(timer_box)
 
@@ -672,13 +828,99 @@ class TeloAutoPyQt(QMainWindow):
         timer_layout.addStretch()
         main_layout.addWidget(timer_box)
 
-        # 7. HISTORIAL LOG
+        # 7. LOG
         log_box = QGroupBox("Historial de Transcripció i Traducció")
         log_layout = QVBoxLayout(log_box)
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
         log_layout.addWidget(self.log_edit)
         main_layout.addWidget(log_box)
+
+    def dibuixar_taula_hdmi(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
+
+        self.table_hdmi.blockSignals(True)
+        self.table_hdmi.setRowCount(len(self.hdmi_items_data))
+
+        for row, data in enumerate(self.hdmi_items_data):
+            self.table_hdmi.setRowHeight(row, 36)
+
+            cb = QCheckBox(data['label'])
+            cb.setChecked(data['enabled'])
+            cb.setStyleSheet("font-weight: bold; margin-left: 8px; color: #FFFFFF;")
+            cb.toggled.connect(lambda val, r=row: self.on_checkbox_hdmi_toggled(r, val))
+            self.table_hdmi.setCellWidget(row, 0, cb)
+
+            sample = QLabel()
+            sample.setFixedSize(22, 22)
+            sample.setStyleSheet(f"background-color: {data['color']}; border: 2px solid white; border-radius: 4px;")
+            
+            sample_container = QWidget()
+            s_layout = QHBoxLayout(sample_container)
+            s_layout.setContentsMargins(0, 0, 0, 0)
+            s_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            s_layout.addWidget(sample)
+            self.table_hdmi.setCellWidget(row, 1, sample_container)
+
+            btn_col = QPushButton("🎨 Color")
+            btn_col.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_col.setStyleSheet("""
+                QPushButton {
+                    background-color: #383838;
+                    color: #FFFFFF;
+                    border: 1px solid #777777;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 3px 10px;
+                }
+                QPushButton:hover {
+                    background-color: #505050;
+                    border: 1px solid #00E676;
+                }
+            """)
+            btn_col.clicked.connect(lambda _, r=row: self.triar_color_canal(r))
+            self.table_hdmi.setCellWidget(row, 2, btn_col)
+
+        self.table_hdmi.blockSignals(False)
+
+    def on_checkbox_hdmi_toggled(self, row, val):
+        if 0 <= row < len(self.hdmi_items_data):
+            self.hdmi_items_data[row]['enabled'] = val
+            self.refrescar_projector()
+
+    def triar_color_canal(self, row):
+        if not (0 <= row < len(self.hdmi_items_data)):
+            return
+        color = QColorDialog.getColor()
+        if color.isValid():
+            self.hdmi_items_data[row]['color'] = color.name()
+            self.dibuixar_taula_hdmi()
+            self.refrescar_projector()
+
+    def moure_canal_amunt(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
+        curr_row = self.table_hdmi.currentRow()
+        if curr_row > 0:
+            self.hdmi_items_data[curr_row], self.hdmi_items_data[curr_row - 1] = (
+                self.hdmi_items_data[curr_row - 1], self.hdmi_items_data[curr_row]
+            )
+            self.dibuixar_taula_hdmi()
+            self.table_hdmi.selectRow(curr_row - 1)
+            self.refrescar_projector()
+
+    def moure_canal_avall(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
+        curr_row = self.table_hdmi.currentRow()
+        if 0 <= curr_row < len(self.hdmi_items_data) - 1:
+            self.hdmi_items_data[curr_row], self.hdmi_items_data[curr_row + 1] = (
+                self.hdmi_items_data[curr_row + 1], self.hdmi_items_data[curr_row]
+            )
+            self.dibuixar_taula_hdmi()
+            self.table_hdmi.selectRow(curr_row + 1)
+            self.refrescar_projector()
 
     def crear_panel_ajustos_estil(self):
         group_box = QGroupBox("🖥️ Control Global d'Estils del Projector HDMI (En Directe)")
@@ -702,16 +944,6 @@ class TeloAutoPyQt(QMainWindow):
 
         layout.addSpacing(15)
 
-        self.btn_col_orig = QPushButton("🟢 Color Original")
-        self.btn_col_orig.clicked.connect(self.triar_color_original)
-        layout.addWidget(self.btn_col_orig)
-
-        self.btn_col_trans = QPushButton("🔵 Color Traducció")
-        self.btn_col_trans.clicked.connect(self.triar_color_traduccio)
-        layout.addWidget(self.btn_col_trans)
-
-        layout.addSpacing(10)
-
         btn_bg_color = QPushButton("⬛ Fons HDMI")
         btn_bg_color.clicked.connect(self.canviar_fons_projector)
         layout.addWidget(btn_bg_color)
@@ -720,55 +952,106 @@ class TeloAutoPyQt(QMainWindow):
         return group_box
 
     def actualitzar_font_projector(self, font_name):
-        self.projector_window.set_font_family(font_name)
-        self.refrescar_projector()
+        if self.projector_window:
+            self.projector_window.set_font_family(font_name)
+            self.refrescar_projector()
 
     def actualitzar_mida_projector(self, size_str):
-        self.projector_window.set_font_size(int(size_str))
-        self.refrescar_projector()
+        if self.projector_window:
+            self.projector_window.set_font_size(int(size_str))
+            self.refrescar_projector()
 
     def canviar_fons_projector(self):
+        if not self.projector_window:
+            return
         color = QColorDialog.getColor()
         if color.isValid():
             self.projector_window.set_bg_color(color.name())
 
-    def triar_color_original(self):
-        color = QColorDialog.getColor()
-        if color.isValid():
-            self.color_proj_orig = color.name()
-            self.refrescar_projector()
-
-    def triar_color_traduccio(self):
-        color = QColorDialog.getColor()
-        if color.isValid():
-            self.color_proj_trans = color.name()
-            self.refrescar_projector()
-
     def refrescar_projector(self):
-        if self.is_blackout:
+        if not self.hdmi_enabled or not self.projector_window or self.is_blackout:
             return
+        
+        textos_map = {
+            'orig': self.raw_text_orig,
+            'trans': self.raw_text_trans if self.chk_translation.isChecked() else ""
+        }
+
         llista_hdmi = []
-        if self.raw_text_orig:
-            llista_hdmi.append((self.raw_text_orig, self.color_proj_orig))
-        if self.chk_translation.isChecked() and self.raw_text_trans:
-            llista_hdmi.append((self.raw_text_trans, self.color_proj_trans))
+        for item in self.hdmi_items_data:
+            if item['enabled']:
+                text_item = textos_map.get(item['id'], "")
+                if text_item:
+                    llista_hdmi.append((str(text_item), item['color']))
             
         self.projector_window.actualitzar_textos(llista_hdmi)
 
-    def on_toggle_translation(self, enabled):
+    def on_toggle_translation_chk(self, enabled):
         self.combo_lang_target.setEnabled(enabled)
         self.box_trans_widget.setVisible(enabled)
-        
-        if getattr(self, 'transcriptor', None) is not None:
+        if self.transcriptor:
             self.transcriptor.translation_enabled = enabled
-
         self.refrescar_projector()
 
     def toggle_projector_window(self):
+        if not self.projector_window:
+            return
         if self.projector_window.isVisible():
             self.projector_window.hide()
         else:
             self.projector_window.show()
+
+    def aplicar_idiomes_manual(self):
+        lang_in = self.combo_lang_in.currentData() or CONFIG_AUTO.get('input_language', 'fr')
+        lang_target = self.combo_lang_target.currentData() or self.translation_cfg.get('target_language', 'ca')
+        trans_on = self.chk_translation.isChecked()
+
+        self.log(f"⚙️ Sol·licitant canvi: Entrada={lang_in}, Traducció={lang_target} (Activa: {trans_on})")
+
+        self.raw_text_orig = ""
+        self.raw_text_trans = ""
+        self.ultim_log_orig = ""
+        self.ultim_log_trans = ""
+        self.display_orig.setText(f"[ Connectant ASR a {lang_in}... ]")
+        if trans_on:
+            self.display_trans.setText(f"[ Connectant Traducció a {lang_target}... ]")
+
+        if self.session_started and not self.is_paused:
+            if self.audio_thread:
+                self.audio_thread.stop()
+                self.audio_thread.wait(600)
+                self.audio_thread = None
+
+            if self.transcriptor:
+                self.transcriptor.aturar_escolta()
+                self.transcriptor = None
+
+            config_trans = {
+                "whisper_live": WHISPER_CFG,
+                "input_language": lang_in,
+                "translation": {
+                    "enabled": trans_on,
+                    "target_language": lang_target,
+                },
+                "audio": {
+                    "samplerate": self.audio_cfg.get('samplerate', 16000),
+                    "block_ms": self.audio_cfg.get('block_ms', 100),
+                    "device": self.combo_audio_device.currentData(),
+                },
+                "show_info": True
+            }
+
+            self.transcriptor = TranscriptorWhisperLiveKit(config=config_trans)
+
+            self.audio_thread = AudioThread(self.transcriptor)
+            self.audio_thread.subtitol_generat.connect(self.on_nou_subtitol)
+            self.audio_thread.start()
+            self.log(f"✅ Reconnectat a {lang_in} -> {lang_target}.")
+        else:
+            if self.transcriptor:
+                self.transcriptor.language = lang_in
+                self.transcriptor.target_language = lang_target
+                self.transcriptor.translation_enabled = trans_on
 
     def on_click_start_stop(self):
         if not self.session_started:
@@ -783,18 +1066,36 @@ class TeloAutoPyQt(QMainWindow):
             self.log("⚠️ El servidor WLK no respon. Intentant reactivar-lo...")
             self.verificar_servidor_wlk()
 
-        if not self.transcriptor:
-            QMessageBox.critical(self, "Error", "El transcriptor no s'ha inicialitzat.")
+        # Llegim exactament els valors visuals seleccionats a la interfície
+        lang_in = self.combo_lang_in.currentData() or CONFIG_AUTO.get('input_language', 'fr')
+        lang_target = self.combo_lang_target.currentData() or self.translation_cfg.get('target_language', 'ca')
+        trans_on = self.chk_translation.isChecked()
+        audio_dev = self.combo_audio_device.currentData()
+
+        config_trans = {
+            "whisper_live": WHISPER_CFG,
+            "input_language": lang_in,
+            "translation": {
+                "enabled": trans_on,
+                "target_language": lang_target,
+            },
+            "audio": {
+                "samplerate": self.audio_cfg.get('samplerate', 16000),
+                "block_ms": self.audio_cfg.get('block_ms', 100),
+                "device": audio_dev,
+            },
+            "show_info": True
+        }
+
+        self.transcriptor = TranscriptorWhisperLiveKit(config=config_trans)
+
+        try:
+            self.transcriptor.inicialitzar_motor()
+        except Exception as e:
+            QMessageBox.critical(self, "Error d'Àudio", f"No s'ha pogut iniciar l'àudio: {e}")
             return
 
         self.is_blackout = False
-        self.transcriptor.translation_enabled = self.chk_translation.isChecked()
-        self.transcriptor.target_language = self.combo_lang_target.currentData()
-
-        sel_dev = self.combo_audio_device.currentData()
-        if hasattr(self.transcriptor, 'device'):
-            self.transcriptor.device = sel_dev
-
         self.session_started = True
         self.is_paused = False
         self.timer.start()
@@ -807,9 +1108,10 @@ class TeloAutoPyQt(QMainWindow):
         self.btn_start_stop.setStyleSheet("background-color: #C62828; color: white;")
         self.btn_pause.setEnabled(True)
 
-        self.display_orig.setText("[ Escoltant... ]")
-        if self.chk_translation.isChecked():
-            self.display_trans.setText("[ Generant traducció... ]")
+        self.display_orig.setText(f"[ Escoltant en {lang_in}... ]")
+        if trans_on:
+            self.display_trans.setText(f"[ Traduint a {lang_target}... ]")
+        self.log(f"🚀 Sessió iniciada: Entrada={lang_in}, Traducció={lang_target} (Activa: {trans_on})")
 
     def stop_session(self):
         self.session_started = False
@@ -833,10 +1135,10 @@ class TeloAutoPyQt(QMainWindow):
             self.display_orig.setText("[ BLACKOUT ]")
             self.display_trans.setText("[ BLACKOUT ]")
             
-            if hasattr(self, 'projector_window') and self.projector_window:
+            if self.hdmi_enabled and self.projector_window:
                 self.projector_window.blackout()
 
-            if self.emissor:
+            if self.web_enabled:
                 self.emissor.emetre("auto_original", "")
                 self.emissor.emetre("auto_translation", "")
         else:
@@ -850,7 +1152,8 @@ class TeloAutoPyQt(QMainWindow):
         if not self.session_started or self.is_paused:
             return
         self.total_elapsed_ms += 100
-        self.lbl_total_time.setText(ms_to_time_str(self.total_elapsed_ms))
+        if ms_to_time_str:
+            self.lbl_total_time.setText(ms_to_time_str(self.total_elapsed_ms))
 
     def on_nou_subtitol(self, dades):
         if self.is_paused or self.is_blackout or not dades:
@@ -859,14 +1162,19 @@ class TeloAutoPyQt(QMainWindow):
         if isinstance(dades, str):
             text_orig = dades
             text_trans = ""
+            definitiu_orig = ""
+            definitiu_trans = ""
+            es_consolidat = False
         else:
-            text_orig = dades.get("original", "")
-            text_trans = dades.get("translation", "") if self.chk_translation.isChecked() else ""
+            text_orig = str(dades.get("original", "")).strip()
+            text_trans = str(dades.get("translation", "")).strip() if self.chk_translation.isChecked() else ""
+            definitiu_orig = str(dades.get("original_definitiu", "")).strip()
+            definitiu_trans = str(dades.get("translation_definitiu", "")).strip() if self.chk_translation.isChecked() else ""
+            es_consolidat = dades.get("es_consolidat", False)
 
         self.raw_text_orig = text_orig
         self.raw_text_trans = text_trans
 
-        # 1. Al monitor de control es limita amb l'amplada de la caixa de l'operador
         ample_op_orig = max(100, self.display_orig.width() - 25)
         text_disp_orig = ajustar_text_a_linies_reals_qt(
             text_orig, 
@@ -876,7 +1184,7 @@ class TeloAutoPyQt(QMainWindow):
         )
         self.display_orig.setText(text_disp_orig)
 
-        if text_trans and self.chk_translation.isChecked():
+        if self.chk_translation.isChecked():
             ample_op_trans = max(100, self.display_trans.width() - 25)
             text_disp_trans = ajustar_text_a_linies_reals_qt(
                 text_trans, 
@@ -886,24 +1194,39 @@ class TeloAutoPyQt(QMainWindow):
             )
             self.display_trans.setText(text_disp_trans)
 
-        # 2. El projector HDMI calcula les seves pròpies línies en funció dels seus píxels reals
-        self.refrescar_projector()
+        if self.hdmi_enabled:
+            self.refrescar_projector()
 
-        # 3. A la web s'envia el text complet perquè el client (mòbil/ulleres) apliqui el seu CSS clamp
-        if self.emissor:
-            if text_orig:
-                self.emissor.emetre("auto_original", text_orig)
-            if text_trans and self.chk_translation.isChecked():
-                self.emissor.emetre("auto_translation", text_trans)
+        if self.web_enabled:
+            def obtenir_text_recent(text, max_paraules=25):
+                if not text:
+                    return ""
+                paraules = str(text).strip().split()
+                if len(paraules) > max_paraules:
+                    return "... " + " ".join(paraules[-max_paraules:])
+                return str(text)
 
-        # 4. Historial
-        timestamp = ms_to_time_str(self.total_elapsed_ms)
-        if text_orig:
-            self.log_edit.append(f"[{timestamp}] 🟢 {text_disp_orig}")
-        if text_trans and self.chk_translation.isChecked():
-            self.log_edit.append(f"[{timestamp}] 🔵 {text_disp_trans}")
-            
-        self.log_edit.moveCursor(QTextCursor.MoveOperation.End)
+            web_orig = obtenir_text_recent(text_orig, max_paraules=25)
+            web_trans = obtenir_text_recent(text_trans, max_paraules=25)
+
+            if web_orig:
+                self.emissor.emetre("auto_original", web_orig)
+            if web_trans and self.chk_translation.isChecked():
+                self.emissor.emetre("auto_translation", web_trans)
+
+        if es_consolidat and definitiu_orig and definitiu_orig != self.ultim_log_orig:
+            nou_tros_orig = definitiu_orig[len(self.ultim_log_orig):].strip()
+            nou_tros_trans = definitiu_trans[len(self.ultim_log_trans):].strip() if self.chk_translation.isChecked() else ""
+
+            if nou_tros_orig:
+                timestamp = ms_to_time_str(self.total_elapsed_ms) if ms_to_time_str else "00:00"
+                self.log_edit.append(f"[{timestamp}] 🟢 {nou_tros_orig}")
+                if nou_tros_trans:
+                    self.log_edit.append(f"[{timestamp}] 🔵 {nou_tros_trans}")
+                self.log_edit.moveCursor(QTextCursor.MoveOperation.End)
+
+                self.ultim_log_orig = definitiu_orig
+                self.ultim_log_trans = definitiu_trans
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_B:
@@ -917,35 +1240,34 @@ class TeloAutoPyQt(QMainWindow):
         if self.monitor_thread:
             self.monitor_thread.stop()
 
-        # Comprova si a config.yaml està configurat per aturar-se (per defecte True)
         stop_wlk = WHISPER_CFG.get('stop_on_exit', True)
-        if self.wlk_subprocess and stop_wlk:
-            try:
-                # Mata tot el grup de processos creats per la comanda (inclòs el servidor wlk fill)
-                os.killpg(os.getpgid(self.wlk_subprocess.pid), 15)  # 15 = SIGTERM
-            except ProcessLookupError:
-                pass
-            except Exception as e:
-                print(f"⚠️ Error aturant el servidor WLK: {e}")
+        if stop_wlk:
+            port = WHISPER_CFG.get('port', 8000)
+            aturar_servidor_wlk_complet(self.wlk_subprocess, port=port)
 
         try:
-            if hasattr(self, 'projector_window') and self.projector_window:
+            if self.hdmi_enabled and hasattr(self, 'projector_window') and self.projector_window:
                 self.projector_window.close()
         except Exception as e:
             print(f"Error tancant el projector: {e}")
         event.accept()
 
     def detectar_segona_pantalla(self):
-        self.projector_window.assignar_a_segona_pantalla()
+        if self.hdmi_enabled and self.projector_window:
+            self.projector_window.assignar_a_segona_pantalla()
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     emissor = None
-    if EmissorWeb is not None:
+    if WEB_SERVER_ENABLED and EmissorWeb is not None:
         try:
-            emissor = EmissorWeb(CONFIG_SERVER, mode="AUTOMÀTIC")
+            emissor = EmissorWeb(
+                config_server=CONFIG_SERVER,
+                mode="AUTOMÀTIC",
+                config_styles=STYLES_CFG
+            )
             emissor.iniciar()
         except Exception as e:
             print(f"⚠️ Alerta en iniciar el servidor web: {e}")

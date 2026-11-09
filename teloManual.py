@@ -49,7 +49,10 @@ CONFIG_COMMON = CONFIG_FULL.get('common', {})
 CONFIG_MANUAL = CONFIG_FULL.get('manual', {})
 STYLES_CFG = CONFIG_COMMON.get('styles', {})
 
-CONFIG_SERVER = CONFIG_COMMON.get('server', {'host': '0.0.0.0', 'port': 5000})
+CONFIG_SERVER = CONFIG_COMMON.get('server', {'host': '0.0.0.0', 'port': 5000, 'enabled': True})
+WEB_SERVER_ENABLED = CONFIG_SERVER.get('enabled', True)
+HDMI_ENABLED = STYLES_CFG.get('hdmi', {}).get('enabled', True)
+
 LANGUAGES_CFG = CONFIG_COMMON.get('languages', {})
 IDIOMES_CONFIG = [{'id': k.upper(), 'label': v} for k, v in LANGUAGES_CFG.items()]
 IDIOMES_MAP = {item['id']: item['label'] for item in IDIOMES_CONFIG}
@@ -58,8 +61,6 @@ IDIOMES_ORDRE = [item['id'] for item in IDIOMES_CONFIG]
 
 # --- FINESTRA DEL PROJECTOR HDMI DINÀMICA PER A MULTI-IDIOMA ---
 class ProjectorManualWindow(QMainWindow):
-    PALETA_COLORS = ["#00E676", "#29B6F6", "#FFCA28", "#FF80AB", "#FFFFFF", "#E040FB"]
-
     def __init__(self, app_title="TELÓ", config_proj=None):
         super().__init__()
         self.app_title = app_title
@@ -69,6 +70,7 @@ class ProjectorManualWindow(QMainWindow):
         self.base_font_size = self.config_proj.get('font_size', 38)
         self.bg_color = self.config_proj.get('background_color', '#000000')
         self.labels = []
+        self._ultims_textos = []
 
         self.init_ui()
 
@@ -87,6 +89,8 @@ class ProjectorManualWindow(QMainWindow):
         self.resize(w, h)
 
     def actualitzar_textos(self, textos_ordenats):
+        self._ultims_textos = textos_ordenats
+
         while len(self.labels) < len(textos_ordenats):
             lbl = QLabel()
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -131,6 +135,11 @@ class ProjectorManualWindow(QMainWindow):
         self.bg_color = hex_color
         self.setStyleSheet(f"background-color: {hex_color};")
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._ultims_textos:
+            self.actualitzar_textos(self._ultims_textos)
+
     def assignar_a_segona_pantalla(self):
         screens = QApplication.screens()
         if len(screens) > 1:
@@ -148,13 +157,14 @@ class TeloManualPyQt(QMainWindow):
     def __init__(self, emissor):
         super().__init__()
         self.emissor = emissor
+        self.web_enabled = WEB_SERVER_ENABLED and (self.emissor is not None)
+        self.hdmi_enabled = HDMI_ENABLED
+
         self.subtitles = []
         self.current_index = -1
         self.detected_langs = []
         self.idiomes_colors_mem = {}
 
-        # Dades d'estat dels idiomes a HDMI: llista de dicts
-        # [{'lang': 'CAT', 'label': 'Català', 'color': '#00E676', 'enabled': True}, ...]
         self.hdmi_langs_data = []
 
         interface_cfg = CONFIG_COMMON.get('interface', {})
@@ -177,15 +187,20 @@ class TeloManualPyQt(QMainWindow):
 
         self.session_started = False
         self.is_paused = False
+        self.is_blackout = False
         self.total_elapsed_ms = 0
         self.sub_elapsed_ms = 0
 
         self.projector_cfg = STYLES_CFG.get('hdmi', {})
-        self.projector_window = ProjectorManualWindow(app_title=self.app_title, config_proj=self.projector_cfg)
+        if self.hdmi_enabled:
+            self.projector_window = ProjectorManualWindow(app_title=self.app_title, config_proj=self.projector_cfg)
+        else:
+            self.projector_window = None
 
         self.init_ui()
         self.inicialitzar_llista_idiomes_per_defecte()
-        self.detectar_segona_pantalla()
+        if self.hdmi_enabled:
+            self.detectar_segona_pantalla()
 
     def init_ui(self):
         self.setWindowTitle(f"{self.app_title} 🎭 - Control Manual Multilingüe")
@@ -237,6 +252,7 @@ class TeloManualPyQt(QMainWindow):
             }}
             
             QComboBox {{ background-color: {self.color_btn_bg}; border: 1px solid {self.color_btn_border}; padding: 4px 8px; border-radius: 4px; }}
+            QCheckBox {{ color: {self.color_text}; font-weight: bold; }}
         """)
 
         central_widget = QWidget()
@@ -257,29 +273,34 @@ class TeloManualPyQt(QMainWindow):
         btn_open.clicked.connect(self.open_srt_file)
         header_layout.addWidget(btn_open)
 
-        btn_toggle_proj = QPushButton("🖥️ Projector HDMI")
-        btn_toggle_proj.clicked.connect(self.toggle_projector_window)
-        header_layout.addWidget(btn_toggle_proj)
+        if self.hdmi_enabled:
+            btn_toggle_proj = QPushButton("🖥️ Projector HDMI")
+            btn_toggle_proj.clicked.connect(self.toggle_projector_window)
+            header_layout.addWidget(btn_toggle_proj)
 
         header_layout.addStretch()
 
-        ip = self.emissor.obtenir_ip_local() if self.emissor else "127.0.0.1"
-        port = self.emissor.port if self.emissor else 5000
-        url_web = f"http://{ip}:{port}"
-        
-        self.ip_label = QLabel(f'🌐 Web Server: <a href="{url_web}" style="color: {self.color_primary};">{url_web}</a>')
+        if self.web_enabled:
+            ip = self.emissor.obtenir_ip_local() if hasattr(self.emissor, 'obtenir_ip_local') else "127.0.0.1"
+            port = self.emissor.port if hasattr(self.emissor, 'port') else 5000
+            url_web = f"http://{ip}:{port}"
+            self.ip_label = QLabel(f'🌐 Web Server: <a href="{url_web}" style="color: {self.color_primary};">{url_web}</a>')
+            self.ip_label.setOpenExternalLinks(True)
+        else:
+            self.ip_label = QLabel('🌐 Web Server: <span style="color: #7f8c8d;">Desactivat</span>')
+
         self.ip_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        self.ip_label.setOpenExternalLinks(True)
         self.ip_label.setStyleSheet("padding: 5px;")
         header_layout.addWidget(self.ip_label)
 
         main_layout.addLayout(header_layout)
 
         # 2. PANELL D'AJUSTOS EN DIRECTE HDMI
-        main_layout.addWidget(self.crear_panel_ajustos_estils())
+        if self.hdmi_enabled:
+            main_layout.addWidget(self.crear_panel_ajustos_estils())
 
         # 3. SELECCIÓ D'IDIOMES, ORDRE I COLORS
-        config_box = QGroupBox("Configuració d'Idiomes, Colors i Ordre Vertical HDMI")
+        config_box = QGroupBox("Configuració d'Idiomes, Colors i Ordre Vertical" + (" HDMI" if self.hdmi_enabled else ""))
         config_layout = QHBoxLayout(config_box)
         config_layout.setContentsMargins(12, 18, 12, 12)
 
@@ -294,45 +315,46 @@ class TeloManualPyQt(QMainWindow):
 
         config_layout.addSpacing(20)
 
-        # Taula Reordenable amb Botons de Color
-        col_hdmi = QVBoxLayout()
-        col_hdmi.addWidget(QLabel("Idiomes a Projectar a HDMI (Marca els actius, canvia el color i utilitza Pujar/Baixar per triar l'ordre vertical):"))
+        # Taula Reordenable (HDMI)
+        if self.hdmi_enabled:
+            col_hdmi = QVBoxLayout()
+            col_hdmi.addWidget(QLabel("Idiomes a Projectar a HDMI:"))
 
-        hdmi_table_layout = QHBoxLayout()
-        
-        self.table_hdmi = QTableWidget()
-        self.table_hdmi.setColumnCount(3)
-        self.table_hdmi.setHorizontalHeaderLabels(["Actiu i Idioma", "Mostra", "Acció"])
-        self.table_hdmi.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table_hdmi.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table_hdmi.setMinimumHeight(140)
-        
-        hd_header = self.table_hdmi.horizontalHeader()
-        hd_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hd_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        hd_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table_hdmi.setColumnWidth(1, 60)
-        self.table_hdmi.setColumnWidth(2, 120)
+            hdmi_table_layout = QHBoxLayout()
+            
+            self.table_hdmi = QTableWidget()
+            self.table_hdmi.setColumnCount(3)
+            self.table_hdmi.setHorizontalHeaderLabels(["Actiu i Idioma", "Mostra", "Acció"])
+            self.table_hdmi.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            self.table_hdmi.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.table_hdmi.setMinimumHeight(140)
+            
+            hd_header = self.table_hdmi.horizontalHeader()
+            hd_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            hd_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            hd_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+            self.table_hdmi.setColumnWidth(1, 60)
+            self.table_hdmi.setColumnWidth(2, 120)
 
-        hdmi_table_layout.addWidget(self.table_hdmi, 4)
+            hdmi_table_layout.addWidget(self.table_hdmi, 4)
 
-        # Botons d'ordenació lateral
-        btn_order_box = QVBoxLayout()
-        self.btn_move_up = QPushButton("⬆️ Pujar")
-        self.btn_move_up.setMinimumHeight(35)
-        self.btn_move_up.clicked.connect(self.moure_idioma_amunt)
-        btn_order_box.addWidget(self.btn_move_up)
+            btn_order_box = QVBoxLayout()
+            self.btn_move_up = QPushButton("⬆️ Pujar")
+            self.btn_move_up.setMinimumHeight(35)
+            self.btn_move_up.clicked.connect(self.moure_idioma_amunt)
+            btn_order_box.addWidget(self.btn_move_up)
 
-        self.btn_move_down = QPushButton("⬇️ Baixar")
-        self.btn_move_down.setMinimumHeight(35)
-        self.btn_move_down.clicked.connect(self.moure_idioma_avall)
-        btn_order_box.addWidget(self.btn_move_down)
-        btn_order_box.addStretch()
+            self.btn_move_down = QPushButton("⬇️ Baixar")
+            self.btn_move_down.setMinimumHeight(35)
+            self.btn_move_down.clicked.connect(self.moure_idioma_avall)
+            btn_order_box.addWidget(self.btn_move_down)
+            btn_order_box.addStretch()
 
-        hdmi_table_layout.addLayout(btn_order_box, 1)
-        col_hdmi.addLayout(hdmi_table_layout)
+            hdmi_table_layout.addLayout(btn_order_box, 1)
+            col_hdmi.addLayout(hdmi_table_layout)
 
-        config_layout.addLayout(col_hdmi, 4)
+            config_layout.addLayout(col_hdmi, 4)
+
         main_layout.addWidget(config_box)
 
         # 4. MONITOR DE PREVISUALITZACIÓ
@@ -441,7 +463,6 @@ class TeloManualPyQt(QMainWindow):
         main_layout.addWidget(self.table)
 
     def inicialitzar_llista_idiomes_per_defecte(self):
-        # Omple amb els idiomes de config.yaml des del principi
         self.detected_langs = [item['id'] for item in IDIOMES_CONFIG]
         self.hdmi_langs_data = []
         for i, item in enumerate(IDIOMES_CONFIG):
@@ -460,23 +481,25 @@ class TeloManualPyQt(QMainWindow):
             self.combo_guia.addItem(item['label'], item['id'])
         self.combo_guia.blockSignals(False)
 
-        self.dibuixar_taula_hdmi()
+        if self.hdmi_enabled:
+            self.dibuixar_taula_hdmi()
 
     def dibuixar_taula_hdmi(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
+
         self.table_hdmi.blockSignals(True)
         self.table_hdmi.setRowCount(len(self.hdmi_langs_data))
 
         for row, data in enumerate(self.hdmi_langs_data):
             self.table_hdmi.setRowHeight(row, 36)
 
-            # Col 0: CheckBox amb nom de l'idioma
             cb = QCheckBox(f"[{data['lang']}]  {data['label']}")
             cb.setChecked(data['enabled'])
             cb.setStyleSheet("font-weight: bold; margin-left: 10px; color: #FFFFFF;")
             cb.toggled.connect(lambda val, r=row: self.on_checkbox_toggled(r, val))
             self.table_hdmi.setCellWidget(row, 0, cb)
 
-            # Col 1: Mostra del color
             sample = QLabel()
             sample.setFixedSize(22, 22)
             sample.setStyleSheet(f"background-color: {data['color']}; border: 2px solid white; border-radius: 4px;")
@@ -488,7 +511,6 @@ class TeloManualPyQt(QMainWindow):
             s_layout.addWidget(sample)
             self.table_hdmi.setCellWidget(row, 1, sample_container)
 
-            # Col 2: Botó "🎨 Color" clar i visible
             btn_col = QPushButton("🎨 Color")
             btn_col.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_col.setStyleSheet("""
@@ -518,7 +540,6 @@ class TeloManualPyQt(QMainWindow):
     def triar_color_idioma(self, row):
         if not (0 <= row < len(self.hdmi_langs_data)):
             return
-        actual_hex = self.hdmi_langs_data[row]['color']
         color = QColorDialog.getColor()
         if color.isValid():
             self.hdmi_langs_data[row]['color'] = color.name()
@@ -527,6 +548,8 @@ class TeloManualPyQt(QMainWindow):
             self.actualitzar_pantalles()
 
     def moure_idioma_amunt(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
         curr_row = self.table_hdmi.currentRow()
         if curr_row > 0:
             self.hdmi_langs_data[curr_row], self.hdmi_langs_data[curr_row - 1] = (
@@ -537,6 +560,8 @@ class TeloManualPyQt(QMainWindow):
             self.actualitzar_pantalles()
 
     def moure_idioma_avall(self):
+        if not self.hdmi_enabled or not hasattr(self, 'table_hdmi'):
+            return
         curr_row = self.table_hdmi.currentRow()
         if 0 <= curr_row < len(self.hdmi_langs_data) - 1:
             self.hdmi_langs_data[curr_row], self.hdmi_langs_data[curr_row + 1] = (
@@ -576,30 +601,37 @@ class TeloManualPyQt(QMainWindow):
         return group_box
 
     def actualitzar_font_projector(self, font_name):
-        self.projector_window.set_font_family(font_name)
-        self.actualitzar_pantalles()
+        if self.projector_window:
+            self.projector_window.set_font_family(font_name)
+            self.actualitzar_pantalles()
 
     def actualitzar_mida_projector(self, size_str):
-        self.projector_window.set_font_size(int(size_str))
-        self.actualitzar_pantalles()
+        if self.projector_window:
+            self.projector_window.set_font_size(int(size_str))
+            self.actualitzar_pantalles()
 
     def canviar_fons_projector(self):
+        if not self.projector_window:
+            return
         color = QColorDialog.getColor()
         if color.isValid():
             self.projector_window.set_bg_color(color.name())
 
     def closeEvent(self, event):
         try:
-            if hasattr(self, 'projector_window') and self.projector_window:
+            if self.hdmi_enabled and hasattr(self, 'projector_window') and self.projector_window:
                 self.projector_window.close()
         except Exception as e:
             print(f"Error tancant el projector: {e}")
         event.accept()
 
     def detectar_segona_pantalla(self):
-        self.projector_window.assignar_a_segona_pantalla()
+        if self.hdmi_enabled and self.projector_window:
+            self.projector_window.assignar_a_segona_pantalla()
 
     def toggle_projector_window(self):
+        if not self.projector_window:
+            return
         if self.projector_window.isVisible():
             self.projector_window.hide()
         else:
@@ -617,6 +649,7 @@ class TeloManualPyQt(QMainWindow):
 
         self.session_started = True
         self.is_paused = False
+        self.is_blackout = False
 
         if self.current_index < 0:
             self.set_active_sub(0)
@@ -653,6 +686,7 @@ class TeloManualPyQt(QMainWindow):
     def stop_session(self):
         self.session_started = False
         self.is_paused = False
+        self.is_blackout = False
         self.timer.stop()
 
         self.total_elapsed_ms = 0
@@ -767,7 +801,7 @@ class TeloManualPyQt(QMainWindow):
                 self.detected_langs.append(lang)
 
     def configurar_canals_i_ui(self):
-        if self.emissor:
+        if self.web_enabled and hasattr(self.emissor, 'actualitzar_canals'):
             nous_canals = []
             for lang in self.detected_langs:
                 label = IDIOMES_MAP.get(lang, lang)
@@ -787,7 +821,7 @@ class TeloManualPyQt(QMainWindow):
             self.combo_guia.setCurrentIndex(index_per_defecte)
         self.combo_guia.blockSignals(False)
 
-        # 2. Actualitza les dades d'idiomes detectats conservant l'ordre i colors previs
+        # 2. Actualitza les dades d'idiomes detectats conservant ordre i colors previs
         existents = {item['lang']: item for item in self.hdmi_langs_data}
         nous_hdmi_data = []
 
@@ -807,7 +841,8 @@ class TeloManualPyQt(QMainWindow):
                 })
 
         self.hdmi_langs_data = nous_hdmi_data
-        self.dibuixar_taula_hdmi()
+        if self.hdmi_enabled:
+            self.dibuixar_taula_hdmi()
 
     def on_guia_lang_changed(self):
         self.render_grid()
@@ -837,6 +872,7 @@ class TeloManualPyQt(QMainWindow):
 
     def set_active_sub(self, index):
         if 0 <= index < len(self.subtitles):
+            self.is_blackout = False
             self.current_index = index
             self.table.selectRow(self.current_index)
             self.table.scrollToItem(self.table.item(self.current_index, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
@@ -845,7 +881,7 @@ class TeloManualPyQt(QMainWindow):
             self.actualitzar_pantalles()
 
     def actualitzar_pantalles(self):
-        if not (0 <= self.current_index < len(self.subtitles)):
+        if self.is_blackout or not (0 <= self.current_index < len(self.subtitles)):
             return
 
         sub = self.subtitles[self.current_index]
@@ -856,36 +892,43 @@ class TeloManualPyQt(QMainWindow):
         self.display_box.setText(f"[{lang_guia}] {text_guia}")
 
         # Recull dels textos seguint l'ordre i colors de la taula
-        textos_projector = []
-        for item in self.hdmi_langs_data:
-            if item['enabled']:
-                lang = item['lang']
-                color = item['color']
-                text = sub['texts'].get(lang, "")
-                if text:
-                    textos_projector.append((lang, text, color))
+        if self.hdmi_enabled and self.projector_window:
+            textos_projector = []
+            for item in self.hdmi_langs_data:
+                if item['enabled']:
+                    lang = item['lang']
+                    color = item['color']
+                    text = sub['texts'].get(lang, "")
+                    if text:
+                        textos_projector.append((lang, text, color))
 
-        # Envia al projector
-        self.projector_window.actualitzar_textos(textos_projector)
+            self.projector_window.actualitzar_textos(textos_projector)
 
         # Emissió web
-        if self.emissor:
+        if self.web_enabled:
             for lang in self.detected_langs:
                 text_lang = sub['texts'].get(lang, "")
                 self.emissor.emetre(lang.lower(), text_lang)
 
     def blackout(self):
-        self.table.clearSelection()
-        self.display_box.setText("[ BLACKOUT ]")
-        if hasattr(self, 'projector_window') and self.projector_window:
-            self.projector_window.blackout()
-        
-        if self.emissor:
-            if self.detected_langs:
-                for lang in self.detected_langs:
-                    self.emissor.emetre(lang.lower(), " ")
-            else:
-                self.emissor.emetre("uni", " ")
+        if not self.is_blackout:
+            self.is_blackout = True
+            self.table.clearSelection()
+            self.display_box.setText("[ BLACKOUT ]")
+            
+            if self.hdmi_enabled and self.projector_window:
+                self.projector_window.blackout()
+            
+            if self.web_enabled:
+                if self.detected_langs:
+                    for lang in self.detected_langs:
+                        self.emissor.emetre(lang.lower(), "")
+                else:
+                    self.emissor.emetre("uni", "")
+        else:
+            self.is_blackout = False
+            if self.current_index >= 0:
+                self.set_active_sub(self.current_index)
 
     def next_sub(self):
         if self.current_index < len(self.subtitles) - 1:
@@ -914,15 +957,17 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     emissor = None
-    if EmissorWeb is not None:
+    if WEB_SERVER_ENABLED and EmissorWeb is not None:
         try:
             CONFIG_SERVER['channels'] = [{'id': item['id'].lower(), 'label': item['label']} for item in IDIOMES_CONFIG]
-            emissor = EmissorWeb(CONFIG_SERVER, mode="MANUAL")
+            emissor = EmissorWeb(
+                config_server=CONFIG_SERVER, 
+                mode="MANUAL",
+                config_styles=STYLES_CFG
+            )
             emissor.iniciar()
         except Exception as e:
             print(f"⚠️ Alerta en iniciar el servidor web: {e}")
-    else:
-        print("⚠️ Advertència: El servidor web funcionarà desactivat per falta de mòduls.")
 
     window = TeloManualPyQt(emissor)
     window.show()

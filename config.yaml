@@ -1,0 +1,115 @@
+# =====================================================================
+# CONFIGURACIÓ UNIFICADA TELÓ (Auto & Manual)
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# 1. SECCIÓ COMÚ (Compartida per teloAuto i teloManual)
+# ---------------------------------------------------------------------
+common:
+  # Servidor Web Intern (Flask / Socket.IO)
+  server:
+    enabled: false
+    host: "0.0.0.0"
+    port: 5000
+    
+
+  # Llista d'idiomes disponibles al sistema
+  languages:
+    ca: "Català"
+    es: "Español"
+    fr: "Français"
+    en: "English"
+    de: "Deutsch"
+    it: "Italiano"
+
+  # Estils generals de la interfície d'usuari (Consola de control)
+  interface:
+    title: "Teló"
+    colors:
+      background: "#121212"
+      text: "#E0E0E0"
+      primary: "#00E676"        # Verd destacat
+      secondary: "#29B6F6"      # Blau secundari
+      panel_bg: "#1E1E1E"
+      button_bg: "#252525"
+      button_border: "#444444"
+
+  # --- ESTILS INDEPENDENTS PER CANAL DE SORTIDA ---
+  styles:
+    hdmi:
+      enabled: true
+      title: "Projector HDMI"
+      font_family: "Arial"
+      font_size: 38
+      font_color: "#FFFFFF"
+      background_color: "#000000"
+      font_weight: "bold"
+      max_lines: 3               # Límit per a la pantalla del projector HDMI
+      width: 1000
+      height: 400
+      alignment: "center"
+
+    web:
+      font_family: "Arial"
+      font_size: "2.5rem"
+      font_color: "#FFFFFF"
+      background_color: "#000000"
+      max_lines: 2               # Límit per als navegadors mòbils / web
+
+    glasses:
+      font_family: "Courier New"
+      font_size: "2.8rem"
+      font_color: "#00FF66"
+      background_color: "#000000"
+      max_lines: 1               # Límit per a les ulleres intel·ligents (habitualment 1 o 2 línies)
+
+
+# ---------------------------------------------------------------------
+# 2. SECCIÓ MANUAL (Específica per a teloManual)
+# ---------------------------------------------------------------------
+manual:
+  # Estils de la caixa de previsualització de subtítols de la pantalla de control
+  subtitols_previsualitzacio:
+    font_family: "Arial"
+    font_size: 15
+    color_text: "#FFFFFF"
+    color_fons: "#1A1A1A"
+    color_borda: "#00E676"
+
+  # Idioma per defecte seleccionat com a guia per a l'operador
+  default_guide_language: "CAT"
+
+
+# ---------------------------------------------------------------------
+# 3. SECCIÓ AUTO (Específica per a teloAuto)
+# ---------------------------------------------------------------------
+auto:
+  # Idioma per defecte d'entrada de la veu (ASR)
+  input_language: "fr"       # <-- Afegim aquesta clau (o "ca", "es", segons convingui)
+
+  # Motor de reconeixement de veu (Whisper LiveKit)
+  whisper_live:
+    host: "localhost"
+    port: 8000
+    #host: "213.73.43.8"
+    #port: 8005
+    endpoint: "/asr"
+    auto_start: false
+    stop_on_exit: false
+    command: "./start-whisper-large-v3-fr-ca.sh"
+
+
+  # Entramat i captura d'àudio
+  audio:
+    samplerate: 16000
+    block_ms: 100
+    #block_ms: 250
+    device: null
+
+  # Traducció automàtica
+  translation:
+    enabled: true
+    target_language: "ca"     # <-- Ja la tens definida
+
+  # Canal de visualització inicial al projector HDMI
+  projector_display_channel: "both"

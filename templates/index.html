@@ -25,9 +25,10 @@
             height: 100vh;
             box-sizing: border-box;
             transition: background-color 0.2s, color 0.2s;
+            overflow: hidden;
         }
 
-        /* Barra de controls superiors per a l'usuari */
+        /* Barra de controls superiors */
         .user-controls {
             position: fixed;
             top: 10px;
@@ -68,7 +69,6 @@
             padding: 0;
         }
 
-        /* Selectors de color amagats associats als botons */
         .color-picker-input {
             display: none;
         }
@@ -78,19 +78,33 @@
             border-color: #00E676;
         }
 
-        #subtitle-container {
+        /* Contenidor exterior per centrar a la pantalla */
+        .stage-wrapper {
             flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
-            text-align: center;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        /* Caixa de subtítols amb alçada fitada a les línies permeses */
+        #subtitle-container {
+            width: 100%;
+            max-width: 95vw;
+            text-align: {{ web_cfg.ulleres.alignment if is_glasses else web_cfg.normal.alignment }};
+            display: block;
+            line-height: 1.3;
+            max-height: calc(1.3em * {{ web_cfg.ulleres.max_lines if is_glasses else web_cfg.normal.max_lines }});
+            overflow: hidden;
             white-space: pre-wrap;
+            word-break: break-word;
+            scroll-behavior: smooth;
         }
     </style>
 </head>
 <body>
 
-    <!-- Controls d'usuari directes a la web -->
     <div class="user-controls">
         <a href="/" title="Tornar al Lobby">🏠 Lobby</a>
         
@@ -100,7 +114,6 @@
             <a href="/ulleres/{{ lang }}" title="Canviar a Mode Ulleres">👓 Ulleres</a>
         {% endif %}
 
-        <!-- Selector de Font de Lletra -->
         <select id="fontSelect" onchange="changeFontFamily(this.value)" title="Tipus de lletra">
             <option value="Arial, sans-serif">Arial</option>
             <option value="'Courier New', monospace">Courier</option>
@@ -109,20 +122,19 @@
             <option value="'Trebuchet MS', sans-serif">Trebuchet</option>
         </select>
 
-        <!-- Selector de Color del Text -->
         <label for="textColorPicker" title="Color del Text">🎨 Text</label>
         <input type="color" id="textColorPicker" class="color-picker-input" onchange="changeTextColor(this.value)">
 
-        <!-- Selector de Color de Fons -->
         <label for="bgColorPicker" title="Color de Fons">⬛ Fons</label>
         <input type="color" id="bgColorPicker" class="color-picker-input" onchange="changeBgColor(this.value)">
 
-        <!-- Ajustos de Mida -->
         <button class="btn-icon" onclick="changeFontSize(0.2)" title="Augmentar lletra">A+</button>
         <button class="btn-icon" onclick="changeFontSize(-0.2)" title="Reduir lletra">A-</button>
     </div>
 
-    <div id="subtitle-container">Esperant subtítols...</div>
+    <div class="stage-wrapper">
+        <div id="subtitle-container">Esperant subtítols...</div>
+    </div>
 
     <script>
         const socket = io();
@@ -134,27 +146,25 @@
         });
 
         socket.on('nou_subtitol', (data) => {
-            if (data.text !== undefined) {
+            if (data && data.text !== undefined) {
                 container.innerText = data.text;
+                // Desplaça la caixa automàticament al final per mostrar sempre les últimes línies generades
+                container.scrollTop = container.scrollHeight;
             }
         });
 
-        // 1. Canviar Font de Lletra
         function changeFontFamily(font) {
             document.body.style.fontFamily = font;
         }
 
-        // 2. Canviar Color de Text
         function changeTextColor(color) {
             document.body.style.color = color;
         }
 
-        // 3. Canviar Color de Fons
         function changeBgColor(color) {
             document.body.style.backgroundColor = color;
         }
 
-        // 4. Ajust de mida de lletra
         let defaultSizeStr = "{% if is_glasses %}{{ web_cfg.ulleres.font_size }}{% else %}{{ web_cfg.normal.font_size }}{% endif %}";
         let currentSize = parseFloat(defaultSizeStr) || 2.5;
 
@@ -163,11 +173,8 @@
             document.body.style.fontSize = currentSize + 'rem';
         }
 
-        // Inicialitzar valors dels selectors de color segons l'estil inicial
         window.addEventListener('DOMContentLoaded', () => {
             const computedStyle = getComputedStyle(document.body);
-            
-            // Establir la font seleccionada si coincideix
             const fontSelect = document.getElementById('fontSelect');
             const currentFont = computedStyle.fontFamily.replace(/"/g, "'");
             for (let option of fontSelect.options) {

@@ -1,0 +1,4 @@
+# Servidor WhisperLiveKit i motor d'inferència
+whisperlivekit
+torch
+torchaudio
