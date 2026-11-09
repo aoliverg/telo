@@ -241,7 +241,16 @@ class TeloManualPyQt(QMainWindow):
                 background-color: {self.color_panel_bg}; 
                 gridline-color: #2A2A2A; 
                 border: 1px solid {self.color_btn_border}; 
-                selection-background-color: #2E7D32; 
+                selection-background-color: #2E7D32;
+                selection-color: #FFFFFF;
+            }}
+            QTableWidget::item:selected {{
+                background-color: #2E7D32;
+                color: #FFFFFF;
+            }}
+            QTableWidget::item:selected:!active {{
+                background-color: #2E7D32;
+                color: #FFFFFF;
             }}
             QHeaderView::section {{ 
                 background-color: {self.color_btn_bg}; 
@@ -875,7 +884,12 @@ class TeloManualPyQt(QMainWindow):
             self.is_blackout = False
             self.current_index = index
             self.table.selectRow(self.current_index)
-            self.table.scrollToItem(self.table.item(self.current_index, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+            
+            # Assegura que la fila quedi marcada com a activa per al motor de selecció
+            item = self.table.item(self.current_index, 0)
+            if item:
+                self.table.setCurrentItem(item)
+                self.table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
             
             self.sub_elapsed_ms = 0
             self.actualitzar_pantalles()
