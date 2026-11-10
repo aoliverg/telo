@@ -66,9 +66,16 @@ class ProjectorManualWindow(QMainWindow):
         self.app_title = app_title
         self.config_proj = config_proj or {}
         
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        
         self.base_font_family = self.config_proj.get('font_family', 'Arial')
         self.base_font_size = self.config_proj.get('font_size', 38)
         self.bg_color = self.config_proj.get('background_color', '#000000')
+        
+        # Nous paràmetres d'alineació (valors per defecte: centrats)
+        self.align_h = Qt.AlignmentFlag.AlignHCenter  # AlignLeft, AlignHCenter, AlignRight
+        self.align_v_block = "center"                 # "top", "center", "bottom"
+        
         self.labels = []
         self._ultims_textos = []
 
@@ -81,45 +88,82 @@ class ProjectorManualWindow(QMainWindow):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout_proj = QVBoxLayout(self.central_widget)
-        self.layout_proj.setContentsMargins(30, 20, 30, 20)
+        self.layout_proj.setContentsMargins(40, 30, 40, 30)
         self.layout_proj.setSpacing(15)
 
         w = self.config_proj.get('width', 1000)
         h = self.config_proj.get('height', 500)
         self.resize(w, h)
 
+    def set_align_h(self, align_str):
+        if align_str == "Esquerra":
+            self.align_h = Qt.AlignmentFlag.AlignLeft
+        elif align_str == "Dreta":
+            self.align_h = Qt.AlignmentFlag.AlignRight
+        else:
+            self.align_h = Qt.AlignmentFlag.AlignHCenter
+        if self._ultims_textos:
+            self.actualitzar_textos(self._ultims_textos)
+
+    def set_align_v(self, align_str):
+        if align_str == "A dalt":
+            self.align_v_block = "top"
+        elif align_str == "A baix":
+            self.align_v_block = "bottom"
+        else:
+            self.align_v_block = "center"
+        if self._ultims_textos:
+            self.actualitzar_textos(self._ultims_textos)
+
     def actualitzar_textos(self, textos_ordenats):
         self._ultims_textos = textos_ordenats
 
+        # 1. Buidem el layout completament per recol·locar continguts i espaiadors
+        while self.layout_proj.count() > 0:
+            item = self.layout_proj.takeAt(0)
+            # No eliminem els labels existents, només els traiem del layout
+
+        # 2. Assegurem que tenim exactament el nombre de QLabel necessari
         while len(self.labels) < len(textos_ordenats):
             lbl = QLabel()
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setWordWrap(True)
-            self.layout_proj.addWidget(lbl, 1)
             self.labels.append(lbl)
 
         while len(self.labels) > len(textos_ordenats):
             lbl = self.labels.pop()
-            self.layout_proj.removeWidget(lbl)
             lbl.deleteLater()
 
-        num_lignes = len(textos_ordenats)
-        if num_lignes >= 4:
-            font_size = max(18, int(self.base_font_size * 0.52))
-        elif num_lignes == 3:
+        # 3. Ajust de mida de tipografia segons el total de línies físiques
+        total_lignes = sum(len(text.split('\n')) for _, text, _ in textos_ordenats)
+        if total_lignes >= 6:
+            font_size = max(16, int(self.base_font_size * 0.45))
+        elif total_lignes >= 4:
+            font_size = max(18, int(self.base_font_size * 0.55))
+        elif total_lignes == 3:
             font_size = max(22, int(self.base_font_size * 0.68))
-        elif num_lignes == 2:
+        elif total_lignes == 2:
             font_size = max(26, int(self.base_font_size * 0.85))
         else:
             font_size = self.base_font_size
 
         font = QFont(self.base_font_family, font_size, QFont.Weight.Bold)
 
+        # 4. Inserció d'espaiador superior si el bloc s'ha de situar al mig o a baix
+        if self.align_v_block in ("center", "bottom"):
+            self.layout_proj.addStretch(1)
+
+        # 5. Afegim i configurem cada etiqueta
         for i, (lang_id, text, color) in enumerate(textos_ordenats):
             lbl = self.labels[i]
             lbl.setFont(font)
             lbl.setText(text)
+            lbl.setAlignment(self.align_h | Qt.AlignmentFlag.AlignVCenter)
             lbl.setStyleSheet(f"color: {color}; background-color: transparent;")
+            self.layout_proj.addWidget(lbl, 0)
+
+        # 6. Inserció d'espaiador inferior si el bloc s'ha de situar al mig o a dalt
+        if self.align_v_block in ("center", "top"):
+            self.layout_proj.addStretch(1)
 
     def blackout(self):
         for lbl in self.labels:
@@ -140,14 +184,24 @@ class ProjectorManualWindow(QMainWindow):
         if self._ultims_textos:
             self.actualitzar_textos(self._ultims_textos)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+        else:
+            super().keyPressEvent(event)
+
     def assignar_a_segona_pantalla(self):
         screens = QApplication.screens()
         if len(screens) > 1:
             segona = screens[1]
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+            self.setGeometry(segona.geometry())
             if self.windowHandle():
                 self.windowHandle().setScreen(segona)
-            self.setGeometry(segona.geometry())
             self.showFullScreen()
+        else:
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+            self.show()
 
 
 # --- FINESTRA PRINCIPAL DE CONTROL MANUAL ---
@@ -602,6 +656,23 @@ class TeloManualPyQt(QMainWindow):
 
         layout.addSpacing(15)
 
+        # --- Nous controls d'alineació ---
+        layout.addWidget(QLabel("Horitzontal:"))
+        combo_align_h = QComboBox()
+        combo_align_h.addItems(["Centrat", "Esquerra", "Dreta"])
+        combo_align_h.currentTextChanged.connect(self.canviar_alineacio_h_projector)
+        layout.addWidget(combo_align_h)
+
+        layout.addSpacing(15)
+
+        layout.addWidget(QLabel("Vertical:"))
+        combo_align_v = QComboBox()
+        combo_align_v.addItems(["Centrat", "A dalt", "A baix"])
+        combo_align_v.currentTextChanged.connect(self.canviar_alineacio_v_projector)
+        layout.addWidget(combo_align_v)
+
+        layout.addSpacing(15)
+
         btn_bg_color = QPushButton("⬛ Fons HDMI")
         btn_bg_color.clicked.connect(self.canviar_fons_projector)
         layout.addWidget(btn_bg_color)
@@ -768,13 +839,15 @@ class TeloManualPyQt(QMainWindow):
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
 
-        blocks = content.strip().replace('\r', '').split('\n\n')
+        # Normalització de salts de línia
+        content = content.replace('\r\n', '\n').replace('\r', '\n')
+        blocks = re.split(r'\n\s*\n', content.strip())
         self.subtitles = []
         detected_tag_set = set()
 
         for block in blocks:
-            lines = block.split('\n')
-            if len(lines) >= 3:
+            lines = [l.strip() for l in block.split('\n') if l.strip()]
+            if len(lines) >= 2:
                 sub_id = lines[0]
                 time_str = lines[1]
                 raw_text = "\n".join(lines[2:])
@@ -783,17 +856,19 @@ class TeloManualPyQt(QMainWindow):
                 start_ms = srt_time_to_ms(times[0]) if len(times) > 0 else 0
                 end_ms = srt_time_to_ms(times[1]) if len(times) > 1 else 0
 
-                matches = re.findall(r'\[([A-Z]{3})\]\s*(.*?)(?=\[[A-Z]{3}\]|$)', raw_text, re.DOTALL)
+                # Regex multilínia: agafa des de [LANG] fins a la propera etiqueta o final de bloc
+                matches = re.findall(r'\[([A-Z]{2,4})\]\s*(.*?)(?=\n?\[[A-Z]{2,4}\]|$)', raw_text, re.DOTALL)
 
                 texts_by_lang = {}
                 if matches:
                     for lang, text in matches:
-                        clean_t = text.strip()
-                        texts_by_lang[lang] = clean_t
+                        # Neteja cada línia preservant els salts de línia reals
+                        clean_lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
+                        texts_by_lang[lang] = "\n".join(clean_lines)
                         detected_tag_set.add(lang)
                 else:
-                    clean_t = raw_text.strip()
-                    texts_by_lang['UNI'] = clean_t
+                    clean_lines = [l.strip() for l in raw_text.strip().split('\n') if l.strip()]
+                    texts_by_lang['UNI'] = "\n".join(clean_lines)
                     detected_tag_set.add('UNI')
 
                 self.subtitles.append({
@@ -875,6 +950,9 @@ class TeloManualPyQt(QMainWindow):
             self.table.setItem(row, 0, item_id)
             self.table.setItem(row, 1, item_time)
             self.table.setItem(row, 2, item_text)
+            
+        # Ajusta l'alçada automàticament si hi ha diverses línies
+        self.table.resizeRowsToContents()
 
     def on_cell_clicked(self, row, column):
         self.set_active_sub(row)
@@ -964,6 +1042,13 @@ class TeloManualPyQt(QMainWindow):
             self.blackout()
         else:
             super().keyPressEvent(event)
+    def canviar_alineacio_h_projector(self, text):
+        if self.projector_window:
+            self.projector_window.set_align_h(text)
+
+    def canviar_alineacio_v_projector(self, text):
+        if self.projector_window:
+            self.projector_window.set_align_v(text) 
 
 
 # --- EXECUCIÓ PRINCIPAL ---
