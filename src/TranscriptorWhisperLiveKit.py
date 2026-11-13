@@ -39,7 +39,12 @@ class TranscriptorWhisperLiveKit(TranscriptorTelo):
         block_ms=None,
         device=None,
         show_info=None,
-    ):
+        initial_prompt=None,  # 👈 Nou paràmetre opcional
+		):
+        # ... resta d'inicialització ...
+        cfg = config or {}
+        # ...
+        self.initial_prompt = initial_prompt or cfg.get("initial_prompt", "")
         try:
             super().__init__(config=config)
         except TypeError:
@@ -77,9 +82,9 @@ class TranscriptorWhisperLiveKit(TranscriptorTelo):
         self._callback_resultat = None
 
     def obtenir_url(self):
-        """Construeix la URL WebSocket forçant sempre ASR en l'idioma d'origen."""
+        """Construeix la URL WebSocket forçant ASR i afegint biaix de prompt si n'hi ha."""
         params = {
-            "task": "transcribe"  # Evita que Whisper forci la seva traducció interna a anglès
+            "task": "transcribe"
         }
         
         if self.language and self.language != "auto":
@@ -88,6 +93,10 @@ class TranscriptorWhisperLiveKit(TranscriptorTelo):
         if self.translation_enabled and self.target_language:
             t_raw = str(self.target_language).lower()
             params["target_language"] = self.MAPA_NLLB.get(t_raw, t_raw)
+
+        # Si tenim prompt de context amb paraules probables, l'enviem al servidor WLK
+        if self.initial_prompt:
+            params["initial_prompt"] = self.initial_prompt
 
         query_string = f"?{urllib.parse.urlencode(params)}"
         return f"ws://{self.host}:{self.port}{self.endpoint}{query_string}"

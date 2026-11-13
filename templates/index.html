@@ -141,14 +141,19 @@
         const room = "{{ lang }}";
         const container = document.getElementById('subtitle-container');
 
-        socket.on('connect', () => {
+        socket.on('connect', function() {
             socket.emit('join', { lang: room });
         });
 
-        socket.on('nou_subtitol', (data) => {
+        socket.on('nou_subtitol', function(data) {
             if (data && data.text !== undefined) {
-                container.innerText = data.text;
-                // Desplaça la caixa automàticament al final per mostrar sempre les últimes línies generades
+                if (!data.text || data.text.trim() === "") {
+                    container.innerHTML = "&nbsp;";
+                } else {
+                    // Convertim els salts de línia \n en <br> perquè innerHTML els respecti
+                    let net = data.text.replace(/\r\n/g, '<br>').replace(/\n/g, '<br>');
+                    container.innerHTML = net;
+                }
                 container.scrollTop = container.scrollHeight;
             }
         });
@@ -173,14 +178,16 @@
             document.body.style.fontSize = currentSize + 'rem';
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', function() {
             const computedStyle = getComputedStyle(document.body);
             const fontSelect = document.getElementById('fontSelect');
-            const currentFont = computedStyle.fontFamily.replace(/"/g, "'");
-            for (let option of fontSelect.options) {
-                if (currentFont.includes(option.value.split(',')[0].replace(/'/g, ''))) {
-                    fontSelect.value = option.value;
-                    break;
+            if (fontSelect) {
+                const currentFont = computedStyle.fontFamily.replace(/"/g, "'");
+                for (let option of fontSelect.options) {
+                    if (currentFont.includes(option.value.split(',')[0].replace(/'/g, ''))) {
+                        fontSelect.value = option.value;
+                        break;
+                    }
                 }
             }
         });

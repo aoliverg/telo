@@ -1,17 +1,16 @@
 # =====================================================================
-# CONFIGURACIÓ UNIFICADA TELÓ (Auto & Manual)
+# CONFIGURACIÓ UNIFICADA TELÓ
 # =====================================================================
 
 # ---------------------------------------------------------------------
-# 1. SECCIÓ COMÚ (Compartida per teloAuto i teloManual)
+# 1. SECCIÓ COMÚ (Compartida per teloAuto, teloManual i teloSincro)
 # ---------------------------------------------------------------------
 common:
   # Servidor Web Intern (Flask / Socket.IO)
   server:
-    enabled: false
+    enabled: true
     host: "0.0.0.0"
     port: 5000
-    
 
   # Llista d'idiomes disponibles al sistema
   languages:
@@ -22,9 +21,10 @@ common:
     de: "Deutsch"
     it: "Italiano"
 
-  # Estils generals de la interfície d'usuari (Consola de control)
+  # Estils generals de la interfície d'usuari (Consola de control de l'operador)
   interface:
-    title: "Teló"
+    title: "TELÓ"
+    language: "ca"
     colors:
       background: "#121212"
       text: "#E0E0E0"
@@ -46,8 +46,10 @@ common:
       font_weight: "bold"
       max_lines: 3               # Límit per a la pantalla del projector HDMI
       width: 1000
-      height: 400
-      alignment: "center"
+      height: 500
+      align_h: "Centrat"         # "Centrat", "Esquerra", "Dreta"
+      align_v: "Centrat"         # "Centrat", "A dalt", "A baix"
+      rotation: 0.0              # Graus d'anivellament angular (-15.0 a +15.0)
 
     web:
       font_family: "Arial"
@@ -61,13 +63,16 @@ common:
       font_size: "2.8rem"
       font_color: "#00FF66"
       background_color: "#000000"
-      max_lines: 1               # Límit per a les ulleres intel·ligents (habitualment 1 o 2 línies)
+      max_lines: 1               # Límit per a les ulleres intel·ligents
 
 
 # ---------------------------------------------------------------------
 # 2. SECCIÓ MANUAL (Específica per a teloManual)
 # ---------------------------------------------------------------------
 manual:
+  # Idioma per defecte seleccionat com a guia per a l'operador
+  default_guide_language: "CAT"
+
   # Estils de la caixa de previsualització de subtítols de la pantalla de control
   subtitols_previsualitzacio:
     font_family: "Arial"
@@ -76,40 +81,78 @@ manual:
     color_fons: "#1A1A1A"
     color_borda: "#00E676"
 
-  # Idioma per defecte seleccionat com a guia per a l'operador
-  default_guide_language: "CAT"
-
 
 # ---------------------------------------------------------------------
-# 3. SECCIÓ AUTO (Específica per a teloAuto)
+# 3. SECCIÓ AUTO (Específica per a teloSincro / teloAuto)
 # ---------------------------------------------------------------------
 auto:
-  # Idioma per defecte d'entrada de la veu (ASR)
-  input_language: "fr"       # <-- Afegim aquesta clau (o "ca", "es", segons convingui)
+  input_language: "fr"
 
-  # Motor de reconeixement de veu (Whisper LiveKit)
   whisper_live:
     host: "localhost"
     port: 8000
-    #host: "213.73.43.8"
+    #host: 213.73.43.8
     #port: 8005
     endpoint: "/asr"
     auto_start: false
     stop_on_exit: false
     command: "./start-whisper-large-v3-fr-ca.sh"
 
-
-  # Entramat i captura d'àudio
   audio:
     samplerate: 16000
     block_ms: 100
-    #block_ms: 250
+    block_ms: 250
     device: null
 
-  # Traducció automàtica
   translation:
     enabled: true
-    target_language: "ca"     # <-- Ja la tens definida
+    target_language: "ca"
 
-  # Canal de visualització inicial al projector HDMI
   projector_display_channel: "both"
+  
+# ---------------------------------------------------------------------
+# 4. SECCIÓ SINCRO (Específica per a teloSincro)
+# ---------------------------------------------------------------------
+sincro:
+  # Idioma per defecte per a la guia de l'operador
+  default_guide_language: "CAT"
+
+  # Idioma que parla l'actor (entrada d'àudio ASR de Whisper)
+  input_language: "fr"
+
+  # Paràmetres de concordança intel·ligent del Sincronitzador
+  matching:
+    score_threshold: 52           # Percentatge mínim de concordança (0-100)
+    no_offset_threshold: 45
+    offset_penalty: 1             # Penalització per distància respecte al subtítol actual
+    base_window: 12               # Nombre de frases endavant a inspeccionar per defecte
+    max_window: 30                # Finestra màxima d'inspecció en cas de pèrdua
+    back_window: 3
+    desync_threshold: 2
+    context_future_subs: 4
+
+  # Gestió temporal
+  timing:
+    grace_limit_sec: 18           # Segons sense reconèixer text abans de considerar mode auto
+    force_auto_fallback: false    # Si true, projecta transcripció directa quan es perd el guió
+
+  # Dispositiu d'àudio dedicat (null = per defecte del sistema)
+  audio_device: null
+
+# Vigilant anti-al·lucinacions i bucles de silenci (compartit per teloAuto i teloSincro)
+  hallucination_watchdog:
+    enabled: true
+    cooldown_sec: 8.0             # Segons mínims entre reinicis de connexió per evitar cascades
+    reconnect_delay_ms: 150       # Pausa abans de reobrir el WebSocket perquè WLK netegi el buffer
+    max_repeated_words: 5         # Màxim de repeticions seguides de la mateixa paraula (ex: "oui oui oui oui oui")
+    phantom_phrases:              # Frases fantasma aïllades (insensible a majúscules/minúscules)
+      - "merci"
+      - "merci beaucoup"
+      - "sous-titrage"
+      - "amara.org"
+      - "thank you"
+      - "subtítols"
+    regex_patterns:               # Expressions regulars per detectar punts suspensius en bucle o caràcters buits
+      - '(?:\.{2,}\s*){2,}'       # Seqüències de punts separats per espais (ex: ".... .... ....")
+      - '\.{5,}'                  # 5 o més punts seguits (ex: ".....")
+      - '^[\.\s]+$'               # Només punts i espais (si té 3 o més caràcters)

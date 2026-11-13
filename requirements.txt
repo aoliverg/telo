@@ -12,6 +12,9 @@ websockets>=12.0
 # Comparació difusa per a sincronització
 rapidfuzz>=3.6.0
 
+# Síntesi de veu per a generació d'àudios de warmup
+gTTS>=2.5.1
+
 # Servidor Web per a emissió en xarxa
 Flask>=3.0.0
 Flask-SocketIO>=5.3.6
